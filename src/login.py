@@ -3,6 +3,7 @@ from selenium.webdriver.common.by import By
 import os
 from dotenv import load_dotenv
 import time
+import pickle
 
 load_dotenv()
 
@@ -40,8 +41,11 @@ def handle_login():
     # and now we are logging in
     login_btn = driver.find_element(By.XPATH, "//button[@data-testid='ajaxAccountLoginFormBtn']")
     login_btn.click()
+    time.sleep(10)
+
+    # Save cookies after logging in
+    with open("cookies.pkl", "wb") as file:
+        print(driver.get_cookies())
+        pickle.dump(driver.get_cookies(), file)
 
     return driver
-
-if __name__ == '__main__':
-    main()
