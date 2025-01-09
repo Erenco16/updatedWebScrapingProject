@@ -1,5 +1,3 @@
-from exceptiongroup import catch
-
 import login
 import requests
 import pickle
@@ -8,8 +6,7 @@ import pandas as pd
 import time
 import os
 from dotenv import load_dotenv
-import send_mail
-from src.send_mail import send_mail_with_excel
+from send_mail import send_mail_with_excel
 
 load_dotenv()
 
@@ -20,8 +17,8 @@ def load_cookies(cookie_file):
     return {cookie['name']: cookie['value'] for cookie in cookies}
 
 
-def retrieve_qty_available(url, cookies, retries=3):
-    """Fetch and parse the HTML to extract qty-available values with retries."""
+def retrieve_product_info(url, cookies, retries=3):
+    """Fetch and parse the HTML to extract product information with retries."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     }
@@ -35,21 +32,36 @@ def retrieve_qty_available(url, cookies, retries=3):
                 # Parse the HTML response
                 soup = BeautifulSoup(response.text, "html.parser")
 
-                # Check if a table exists
-                if not soup.find("table"):
-                    print(f"No table found on the page: {url}")
-                    return "Non existent in hafele.com.tr"
+                # Extract price details
+                prices = soup.select(".pricedisplay")
+                kdv_haric_tavsiye_edilen_perakende_fiyat = (
+                    prices[0].select_one(".price").text.strip() if len(prices) > 0 else None
+                )
+                kdv_haric_net_fiyat = (
+                    prices[1].select_one(".price").text.strip() if len(prices) > 1 else None
+                )
+                kdv_haric_satis_fiyati = (
+                    prices[2].select_one(".price").text.strip() if len(prices) > 2 else None
+                )
 
-                # Select qty-available elements
-                qty_available_elements = soup.select(".qty-available")
+                # Extract availability flag
+                stok_durumu_element = soup.select_one(".availability-flag")
+                stok_durumu = stok_durumu_element.text.strip() if stok_durumu_element else None
 
-                # Extract qty-available values
-                qty_available_values = [
-                    int(element.text.strip())
-                    for element in qty_available_elements
-                    if element.text.strip().isdigit()
+                # Extract stock amounts
+                stock_amount_elements = soup.select(".qty-available")
+                stock_amounts = [
+                    int(element.text.strip()) for element in stock_amount_elements if element.text.strip().isdigit()
                 ]
-                return qty_available_values[0] if qty_available_values else None
+                stock_amount = stock_amounts[0] if stock_amounts else None
+
+                return {
+                    "kdv_haric_tavsiye_edilen_perakende_fiyat": kdv_haric_tavsiye_edilen_perakende_fiyat,
+                    "kdv_haric_net_fiyat": kdv_haric_net_fiyat,
+                    "kdv_haric_satis_fiyati": kdv_haric_satis_fiyati,
+                    "stok_durumu": stok_durumu,
+                    "stock_amount": stock_amount,
+                }
             else:
                 print(f"Request failed with status {response.status_code}. Retrying...")
 
@@ -59,7 +71,13 @@ def retrieve_qty_available(url, cookies, retries=3):
         time.sleep(2 ** attempt)  # Exponential backoff
 
     print(f"Failed to fetch data after {retries} retries for URL: {url}")
-    return None
+    return {
+        "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
+        "kdv_haric_net_fiyat": None,
+        "kdv_haric_satis_fiyati": None,
+        "stok_durumu": None,
+        "stock_amount": None,
+    }
 
 
 def fetch_product_data(stock_code, cookies):
@@ -69,7 +87,7 @@ def fetch_product_data(stock_code, cookies):
     params = f"?SKU={sanitized_code}&ProductQuantity=50000&SynchronizationAjaxToken=1"
     product_url = base_url + params
 
-    return retrieve_qty_available(product_url, cookies)
+    return retrieve_product_info(product_url, cookies)
 
 
 def handle_login_with_retry():
@@ -97,8 +115,11 @@ def main():
 
     # Step 2: Read stock codes from the input Excel file
     input_file = "product_codes.xlsx"
-    df = pd.read_excel(input_file)
+    df = pd.read_excel(input_file, nrows=5)
     stock_codes = df['stockCode'].tolist()
+
+    # Debug the number of products
+    print(f"Total stock codes to process: {len(stock_codes)}")
 
     # Step 3: Process stock codes sequentially
     results = []
@@ -114,24 +135,40 @@ def main():
 
         # Fetch data and handle errors gracefully
         try:
-            qty_value = fetch_product_data(code, cookies)
-            results.append((code, qty_value))
+            product_info = fetch_product_data(code, cookies)
+            product_info["stockCode"] = code  # Add stock code to the result
+            results.append(product_info)
         except Exception as e:
             print(f"Error processing stock code {code}: {e}")
-            results.append((code, "Urun hafele.com.tr da bulunmuyor."))
+            results.append({
+                "stockCode": code,
+                "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
+                "kdv_haric_net_fiyat": None,
+                "kdv_haric_satis_fiyati": None,
+                "stok_durumu": "Error fetching data",
+                "stock_amount": None,
+            })
 
         time.sleep(5)  # Add a longer delay between requests to avoid rate-limiting
 
     # Step 4: Save all results to Excel after processing
     output_file = "product_data_results.xlsx"
-    output_data = pd.DataFrame(results, columns=["stockCode", "QtyAvailable"])
+    output_data = pd.DataFrame(results)
+
+    # Reverse the order of the columns
+    output_data = output_data[
+        [   "stockCode",
+            "stock_amount",
+            "stok_durumu",
+            "kdv_haric_satis_fiyati",
+            "kdv_haric_net_fiyat",
+            "kdv_haric_tavsiye_edilen_perakende_fiyat"
+        ]
+    ]
+
     output_data.to_excel(output_file, index=False)
     print(f"Results saved to {output_file}")
-    email = os.getenv("gmail_receiver_email_2")
-    try:
-        send_mail_with_excel(email)
-        print(f"Email sent to {email}")
-    except Exception as e:
-        print(f"Error sending email: {e}")
+
+
 if __name__ == '__main__':
     main()
