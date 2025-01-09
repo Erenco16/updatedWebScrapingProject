@@ -7,13 +7,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-def send_mail_with_excel(recipient_email):
+def send_mail_with_excel(recipient_email, excel_file):
     subject = "Hafele Guncel Stoklar"
     content = r"Guncel stoklari iceren .xlsx dosyasini ekte bulabilirsiniz."
 
     sender_email = os.getenv("gmail_sender_email")
     app_password = os.getenv("gmail_app_password")
-    excel_file = "excel_file_to_mail.xlsx"
 
     msg = EmailMessage()
     msg['Subject'] = subject
