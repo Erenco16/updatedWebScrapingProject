@@ -29,18 +29,6 @@ def handle_login():
     username = os.getenv("USERNAME")
     password = os.getenv("PASSWORD")
 
-    # Close the initial warning page
-    try:
-        element = driver.find_element(By.XPATH,
-                                      "//a[contains(@class, 'a-btn') and contains(@class, 't-btn') and contains(@class, 't-btn-secondary') and contains(@class, 'modal-link')]")
-        driver.execute_script("arguments[0].click();", element)
-    except Exception as e:
-        print(f"Warning page close failed: {e}")
-
-    # Handle login
-    login_header = driver.find_element(By.ID, "headerLoginLinkAction")
-    login_header.click()
-
     username_input = driver.find_element(By.ID, "ShopLoginForm_Login_headerItemLogin")
     password_input = driver.find_element(By.ID, "ShopLoginForm_Password_headerItemLogin")
     username_input.send_keys(username)
