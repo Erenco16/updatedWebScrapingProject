@@ -6,8 +6,8 @@ import pandas as pd
 import time
 import os
 from dotenv import load_dotenv
-from send_mail import send_mail_with_excel
 import concurrent.futures
+from send_mail import send_mail_with_excel
 
 load_dotenv()
 
@@ -290,12 +290,12 @@ def main():
     print(f"Results saved to {output_file}")
 
     # Step 5: Send email with the final results
-    # email = os.getenv("gmail_receiver_email_2")
-    # try:
-    #     send_mail_with_excel(email, output_file)
-    #     print(f"Email sent to {email}")
-    # except Exception as e:
-    #     print(f"Error sending email: {e}")
+    email = os.getenv("gmail_receiver_email_2")
+    try:
+        send_mail_with_excel(email, output_file)
+        print(f"Email sent to {email}")
+    except Exception as e:
+        print(f"Error sending email: {e}")
     end_time = time.time()
     print(f"Amount of {len(stock_codes)} products have been scraped in {round((end_time - start_time)/60, 2)} minutes.")
 
