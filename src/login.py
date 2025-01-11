@@ -26,8 +26,8 @@ def handle_login():
     time.sleep(5)
 
     # Get username and password from environment variables
-    username = os.getenv("USERNAME")
-    password = os.getenv("PASSWORD")
+    username = os.getenv("hafele_username")
+    password = os.getenv("hafele_password")
 
 
     # Handle login
