@@ -1,0 +1,49 @@
+version: "3.9"
+
+services:
+  selenium-hub:
+    image: seleniarm/hub:latest
+    container_name: selenium-hub
+    ports:
+      - "4444:4444"
+
+  chrome:
+    image: seleniarm/node-chromium:latest
+    container_name: selenium-node-chrome
+    depends_on:
+      - selenium-hub
+    environment:
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+
+  firefox:
+    image: seleniarm/node-firefox:latest
+    container_name: selenium-node-firefox
+    depends_on:
+      - selenium-hub
+    environment:
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+
+  webscrape:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: webscrape
+    depends_on:
+      - selenium-hub
+    env_file:
+      - .env  # Load environment variables from .env file
+    environment:
+      - GRID_URL=http://selenium-hub:4444/wd/hub  # Set fallback GRID_URL
+    volumes:
+      - ./src/input:/src/input  # Ensure the input directory is mounted
+      - ./src/output:/src/output  # If there is an output directory
+      - ./wait-for-it.sh:/wait-for-it.sh  # Mount the wait-for-it script
+    command: ["bash", "/wait-for-it.sh", "selenium-hub", "4444", "--", "python", "main.py"]
+
+volumes:
+  input:  # Define the input volume
+  output:  # Define the output volume
