@@ -224,7 +224,7 @@ def main():
 
     # Read stock codes from Excel
     input_file = "product_codes.xlsx"
-    df = pd.read_excel(input_file)
+    df = pd.read_excel(input_file, nrows=5)
     stock_codes = df['stockCode'].tolist()
 
     print(f"Total stock codes to process: {len(stock_codes)}")

@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 import time
 import pickle
 import json
-
+import proxies
 load_dotenv()
 
 
@@ -14,6 +14,16 @@ def handle_login():
 
     # Initialize Chrome driver with custom options
     options = Options()
+
+    # make it look like we're entering the website from turkiye
+    proxy_ip, proxy_port = proxies.get_random_proxy("turkiye_proxy_list.json")
+    proxy = f"{proxy_ip}:{proxy_port}"
+    print(proxy)
+    chrome_options = Options()
+    chrome_options.add_argument(f'--proxy-server={proxy}')
+
+    # Set language to Turkish
+    chrome_options.add_argument("--lang=tr-TR")
     options.add_argument("--disable-blink-features=AutomationControlled")  # Avoid detection as a bot
     options.add_argument("--start-maximized")  # Start with a maximized window for consistent behavior
 
@@ -24,6 +34,10 @@ def handle_login():
     driver.get("https://www.hafele.com.tr/")
 
     time.sleep(5)
+
+    # Handle login
+    login_header = driver.find_element(By.ID, "headerLoginLinkAction")
+    login_header.click()
 
     # Get username and password from environment variables
     username = os.getenv("USERNAME")
