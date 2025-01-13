@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y \
     libatk1.0-0 \
     libatk-bridge2.0-0 \
     libcups2 && \
-    apt-get clean
+    rm -rf /var/lib/apt/lists/*
 
 # Ensure the ChromeDriver binary is in the default PATH
 RUN ln -s /usr/bin/chromium-driver /usr/local/bin/chromedriver
@@ -38,9 +38,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the application files
 COPY src/ /src/
 
+# Add the wait-for-it.sh script for service readiness
+COPY wait-for-it.sh /wait-for-it.sh
+RUN chmod +x /wait-for-it.sh
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV webdriver.chrome.driver="/usr/bin/chromedriver"
 
-# Command to run the application
-CMD ["python", "main.py"]
+# Command to wait for selenium-hub and start the application
+CMD ["bash", "/wait-for-it.sh", "selenium-hub", "4444", "--", "python", "main.py"]
