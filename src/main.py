@@ -77,23 +77,42 @@ def retrieve_qty_available(url, cookies, retries=3):
 def retrieve_product_data(url, cookies, retries=3):
     """Fetch and parse the HTML to extract stock, price, and group product information."""
     headers = {
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     }
 
     for attempt in range(retries):
         try:
+            print(f"Requesting URL: {url}")
             response = requests.get(url, headers=headers, cookies=cookies, timeout=30)
+
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
+
+                # Check for group product table
+                group_table = soup.find("tr", id="productBomArticlesInformation")
+                if group_table:
+                    print("Group product detected. Fetching sub-product stock information.")
+                    return handle_group_product(soup, cookies)
+
+                # Process singular product
                 return handle_singular_product(soup)
+
             else:
                 print(f"Request failed with status {response.status_code}. Retrying...")
+
         except requests.exceptions.RequestException as e:
             print(f"Request error: {e}. Retrying...")
-        time.sleep(2 ** attempt)
+
+        time.sleep(2 ** attempt)  # Exponential backoff
 
     print(f"Failed to fetch data after {retries} retries for URL: {url}")
-    return {"stok_durumu": "Error", "stock_amount": None}
+    return {
+        "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
+        "kdv_haric_net_fiyat": None,
+        "kdv_haric_satis_fiyati": None,
+        "stok_durumu": None,
+        "stock_amount": None,
+    }
 
 
 def handle_singular_product(soup):
@@ -109,6 +128,48 @@ def handle_singular_product(soup):
         "stock_amount": stock_amount,
     }
 
+def handle_group_product(soup, cookies):
+    """Handle group product data extraction."""
+    base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
+    sub_product_rows = soup.select(".BomArticlesTable .productDataTableQty")
+    sub_product_stocks = []
+
+    for row in sub_product_rows:
+        sku_element = row.find("a", class_="product-sku-title")
+        if sku_element:
+            sub_product_sku = sku_element.text.strip().replace(".", "")
+            sub_url = f"{base_url}?SKU={sub_product_sku}&ProductQuantity=200000&SynchronizationAjaxToken=1"
+            sub_stock = retrieve_singular_stock(sub_url, cookies)
+            if sub_stock is not None:
+                sub_product_stocks.append(sub_stock)
+
+    # Determine the main product stock as the minimum of all sub-product stocks
+    main_product_stock = min(sub_product_stocks) if sub_product_stocks else None
+
+    # Extract prices (same as singular product)
+    price_info = extract_price_info(soup)
+
+    return {
+        **price_info,
+        "stok_durumu": "Group Product",
+        "stock_amount": main_product_stock,
+    }
+
+def retrieve_singular_stock(url, cookies):
+    """Fetch stock information for a singular product."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    }
+
+    try:
+        response = requests.get(url, headers=headers, cookies=cookies, timeout=30)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, "html.parser")
+            stock_amount = soup.select_one(".qty-available")
+            return int(stock_amount.text.strip()) if stock_amount and stock_amount.text.strip().isdigit() else None
+    except Exception as e:
+        print(f"Error fetching singular stock: {e}")
+    return None
 
 def extract_price_info(soup):
     """Extract price information from the soup."""
@@ -142,7 +203,7 @@ def main():
 
     # Scrape data using multithreading
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
         future_to_code = {executor.submit(retrieve_product_data, url, cookies): code for url, code in product_urls}
         for future in concurrent.futures.as_completed(future_to_code):
             code = future_to_code[future]
@@ -158,7 +219,17 @@ def main():
     if os.path.exists(OUTPUT_FILE):
         os.remove(OUTPUT_FILE)  # Ensure no old file exists
 
+    # re arrange the order of the columns of the data
     output_data = pd.DataFrame(results)
+    output_data = output_data[
+        ["stockCode",
+         "stock_amount",
+         "stok_durumu",
+         "kdv_haric_satis_fiyati",
+         "kdv_haric_net_fiyat",
+         "kdv_haric_tavsiye_edilen_perakende_fiyat"
+         ]
+    ]
     output_data.to_excel(OUTPUT_FILE, index=False)
     print(f"Results saved to {OUTPUT_FILE}")
 
@@ -169,7 +240,7 @@ def main():
     print(f"Sending the file: {OUTPUT_FILE}")
     print(f"File last modified: {time.ctime(os.path.getmtime(OUTPUT_FILE))}")
 
-    # Send email with the results
+   # Send email with the results
     email = os.getenv("gmail_receiver_email_2")
     try:
         send_mail_with_excel(email, OUTPUT_FILE)
