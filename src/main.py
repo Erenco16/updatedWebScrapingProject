@@ -7,8 +7,14 @@ import time
 import os
 from dotenv import load_dotenv
 from send_mail import send_mail_with_excel
+import concurrent.futures
 
 load_dotenv()
+
+COOKIE_FILE = "cookies.pkl"
+INPUT_FILE = "/src/input/product_codes.xlsx"  # Use absolute path for consistency
+OUTPUT_FILE = "/src/output/product_data_results.xlsx"  # Use absolute path for consistency
+COOKIE_EXPIRY = 600  # 10 minutes
 
 def load_cookies(cookie_file):
     """Load cookies from the saved file."""
@@ -17,30 +23,41 @@ def load_cookies(cookie_file):
     return {cookie['name']: cookie['value'] for cookie in cookies}
 
 
+def is_cookie_valid(cookie_file, expiry_time):
+    """Check if the cookies file exists and is not expired."""
+    return (
+        os.path.exists(cookie_file)
+        and (time.time() - os.path.getmtime(cookie_file)) < expiry_time
+    )
+
+
+def handle_login_with_retry():
+    """Handle login and retry on failure."""
+    while True:
+        try:
+            print("Attempting to log in...")
+            driver = login.handle_login()
+            driver.quit()
+            print("Login successful.")
+            return
+        except Exception as e:
+            print(f"Login attempt failed: {e}")
+            print("Retrying in 5 seconds...")
+            time.sleep(5)
+
+
 def retrieve_qty_available(url, cookies, retries=3):
     """Fetch and parse the HTML to extract qty-available values with retries."""
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0",
     }
 
     for attempt in range(retries):
         try:
-            print(f"Requesting URL: {url}")
             response = requests.get(url, headers=headers, cookies=cookies, timeout=30)
-
             if response.status_code == 200:
-                # Parse the HTML response
                 soup = BeautifulSoup(response.text, "html.parser")
-
-                # Check if a table exists
-                if not soup.find("table"):
-                    print(f"No table found on the page: {url}")
-                    return "Non existent in hafele.com.tr"
-
-                # Select qty-available elements
                 qty_available_elements = soup.select(".qty-available")
-
-                # Extract qty-available values
                 qty_available_values = [
                     int(element.text.strip())
                     for element in qty_available_elements
@@ -49,11 +66,9 @@ def retrieve_qty_available(url, cookies, retries=3):
                 return qty_available_values[0] if qty_available_values else None
             else:
                 print(f"Request failed with status {response.status_code}. Retrying...")
-
         except requests.exceptions.RequestException as e:
             print(f"Request error: {e}. Retrying...")
-
-        time.sleep(2 ** attempt)  # Exponential backoff
+        time.sleep(2 ** attempt)
 
     print(f"Failed to fetch data after {retries} retries for URL: {url}")
     return None
@@ -100,6 +115,19 @@ def retrieve_product_data(url, cookies, retries=3):
     }
 
 
+def handle_singular_product(soup):
+    """Handle singular product data extraction."""
+    price_info = extract_price_info(soup)
+    stock_info = soup.select_one(".availability-flag").text.strip()
+    stock_amount = soup.select_one(".qty-available")
+    stock_amount = int(stock_amount.text.strip()) if stock_amount and stock_amount.text.strip().isdigit() else None
+
+    return {
+        **price_info,
+        "stok_durumu": stock_info,
+        "stock_amount": stock_amount,
+    }
+
 def handle_group_product(soup, cookies):
     """Handle group product data extraction."""
     base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
@@ -127,37 +155,6 @@ def handle_group_product(soup, cookies):
         "stock_amount": main_product_stock,
     }
 
-
-def handle_singular_product(soup):
-    """Handle singular product data extraction."""
-    price_info = extract_price_info(soup)
-    stock_info = soup.select_one(".availability-flag").text.strip()
-    stock_amount = soup.select_one(".qty-available")
-    stock_amount = int(stock_amount.text.strip()) if stock_amount and stock_amount.text.strip().isdigit() else None
-
-    return {
-        **price_info,
-        "stok_durumu": stock_info,
-        "stock_amount": stock_amount,
-    }
-
-
-def extract_price_info(soup):
-    """Extract price information from the soup."""
-    prices = soup.select("td.pricedisplay .price")
-    kdv_haric_tavsiye_edilen_perakende_fiyat = (
-        prices[2].text.strip() if len(prices) > 2 else None
-    )
-    kdv_haric_net_fiyat = prices[1].text.strip() if len(prices) > 1 else None
-    kdv_haric_satis_fiyati = prices[0].text.strip() if len(prices) > 0 else None
-
-    return {
-        "kdv_haric_tavsiye_edilen_perakende_fiyat": kdv_haric_tavsiye_edilen_perakende_fiyat,
-        "kdv_haric_net_fiyat": kdv_haric_net_fiyat,
-        "kdv_haric_satis_fiyati": kdv_haric_satis_fiyati,
-    }
-
-
 def retrieve_singular_stock(url, cookies):
     """Fetch stock information for a singular product."""
     headers = {
@@ -174,96 +171,86 @@ def retrieve_singular_stock(url, cookies):
         print(f"Error fetching singular stock: {e}")
     return None
 
+def extract_price_info(soup):
+    """Extract price information from the soup."""
+    prices = soup.select("span.price")
+    units = soup.select("span.perUnit")
 
-
-def handle_login_with_retry():
-    """Handle login with retries until successful."""
-    while True:
-        try:
-            print("Attempting to log in...")
-            driver = login.handle_login()
-            driver.quit()
-            print("Login successful.")
-            return
-        except Exception as e:
-            print(f"Login attempt failed: {e}")
-            print("Retrying in 5 seconds...")
-            time.sleep(5)
+    return {
+        "kdv_haric_tavsiye_edilen_perakende_fiyat": prices[2].text.strip() if len(prices) > 2 else None,
+        "kdv_haric_net_fiyat": prices[0].text.strip() if len(prices) > 0 else None,
+        "kdv_haric_satis_fiyati": prices[1].text.strip() if len(prices) > 1 else None,
+    }
 
 
 def main():
-    # Step 1: Handle login with retry
-    handle_login_with_retry()
+    start_time = time.time()
 
-    # Load cookies and set login refresh timer
-    cookies = load_cookies("cookies.pkl")
-    last_login_time = time.time()
+    # Ensure valid cookies
+    if not is_cookie_valid(COOKIE_FILE, COOKIE_EXPIRY):
+        handle_login_with_retry()
 
-    # Step 2: Read stock codes from the input Excel file
-    input_file = "product_codes.xlsx"
-    df = pd.read_excel(input_file, nrows=5)
-    stock_codes = df['stockCode'].tolist()
-    # Base URL for product requests
+    # Load cookies
+    cookies = load_cookies(COOKIE_FILE)
+
+    # Read stock codes from Excel
+    df = pd.read_excel(INPUT_FILE)
+    stock_codes = df["stockCode"].tolist()
+
+    # Prepare URLs
     base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
+    product_urls = [(f"{base_url}?SKU={code.replace('.', '')}&ProductQuantity=50000", code) for code in stock_codes]
 
-    # Step 3: Process stock codes sequentially
+    # Scrape data using multithreading
     results = []
-    for index, code in enumerate(stock_codes):
-        print(f"Processing stock code ({index + 1}/{len(stock_codes)}): {code}")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        future_to_code = {executor.submit(retrieve_product_data, url, cookies): code for url, code in product_urls}
+        for future in concurrent.futures.as_completed(future_to_code):
+            code = future_to_code[future]
+            try:
+                result = future.result()
+                result["stockCode"] = code
+                results.append(result)
+            except Exception as e:
+                print(f"Error processing stock code {code}: {e}")
+                results.append({"stockCode": code, "stok_durumu": "Error", "stock_amount": None})
 
-        # Re-login every 10 minutes
-        if time.time() - last_login_time > 600:  # 10 minutes
-            print("Refreshing login session...")
-            handle_login_with_retry()
-            cookies = load_cookies("cookies.pkl")
-            last_login_time = time.time()
+    # Save results to Excel
+    if os.path.exists(OUTPUT_FILE):
+        os.remove(OUTPUT_FILE)  # Ensure no old file exists
 
-        # Construct the full URL for the product
-        sanitized_code = code.replace(".", "")  # Remove dots from the stock code
-        product_url = f"{base_url}?SKU={sanitized_code}&ProductQuantity=50000&SynchronizationAjaxToken=1"
-
-        # Fetch data and handle errors gracefully
-        try:
-            product_data = retrieve_product_data(product_url, cookies)
-            product_data["stockCode"] = code  # Add stock code as part of the result
-            results.append(product_data)
-        except Exception as e:
-            print(f"Error processing stock code {code}: {e}")
-            results.append({
-                "stockCode": code,
-                "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
-                "kdv_haric_net_fiyat": None,
-                "kdv_haric_satis_fiyati": None,
-                "stok_durumu": "Error",
-                "stock_amount": None,
-            })
-
-        time.sleep(5)  # Add a longer delay between requests to avoid rate-limiting
-
-    # Step 4: Save all results to Excel after processing
-    output_file = "product_data_results.xlsx"
-    print(f"Saving {len(results)} results to {output_file}")
-    output_data = pd.DataFrame(results)  # Create DataFrame directly from list of dictionaries
+    # re arrange the order of the columns of the data
+    output_data = pd.DataFrame(results)
     output_data = output_data[
-        [   "stockCode",
-            "stock_amount",
-            "stok_durumu",
-            "kdv_haric_satis_fiyati",
-            "kdv_haric_net_fiyat",
-            "kdv_haric_tavsiye_edilen_perakende_fiyat"
-        ]
+        ["stockCode",
+         "stock_amount",
+         "stok_durumu",
+         "kdv_haric_satis_fiyati",
+         "kdv_haric_net_fiyat",
+         "kdv_haric_tavsiye_edilen_perakende_fiyat"
+         ]
     ]
-    output_data.to_excel(output_file, index=False)
-    print(f"Results saved to {output_file}")
+    output_data.to_excel(OUTPUT_FILE, index=False)
+    print(f"Results saved to {OUTPUT_FILE}")
 
-    # Step 5: Send email with the final results
+    # Delay to ensure file write completion
+    time.sleep(1)
+
+    # Debug logs
+    print(f"Sending the file: {OUTPUT_FILE}")
+    print(f"File last modified: {time.ctime(os.path.getmtime(OUTPUT_FILE))}")
+
+   # Send email with the results
     email = os.getenv("gmail_receiver_email_2")
     try:
-        send_mail_with_excel(email, output_file)
+        send_mail_with_excel(email, OUTPUT_FILE)
         print(f"Email sent to {email}")
     except Exception as e:
         print(f"Error sending email: {e}")
 
+    end_time = time.time()
+    print(f"Scraped {len(stock_codes)} products in {round((end_time - start_time) / 60, 2)} minutes.")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

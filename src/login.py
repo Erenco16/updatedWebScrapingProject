@@ -8,17 +8,27 @@ import json
 
 load_dotenv()
 
-
 def handle_login():
     from selenium.webdriver.chrome.options import Options
 
-    # Initialize Chrome driver with custom options
+    # Initialize Chrome options
     options = Options()
     options.add_argument("--disable-blink-features=AutomationControlled")  # Avoid detection as a bot
     options.add_argument("--start-maximized")  # Start with a maximized window for consistent behavior
+    options.add_argument("--headless")  # Run in headless mode for grid compatibility
+    options.add_argument("--no-sandbox")  # Disable sandbox for compatibility
+    options.add_argument("--disable-dev-shm-usage")  # Avoid issues with shared memory
+    options.add_argument(f"user-agent={os.getenv('USER_AGENT')}")  # Set custom user agent if provided
 
-    # Load driver
-    driver = webdriver.Chrome(options=options)
+    # Selenium Grid Hub URL
+    selenium_hub_url = os.getenv("GRID_URL", "http://selenium-hub:4444/wd/hub")
+
+
+    # Initialize the Remote WebDriver
+    driver = webdriver.Remote(
+        command_executor=selenium_hub_url,
+        options=options
+    )
 
     # Open the website
     driver.get("https://www.hafele.com.tr/")
@@ -26,8 +36,8 @@ def handle_login():
     time.sleep(5)
 
     # Get username and password from environment variables
-    username = os.getenv("USERNAME")
-    password = os.getenv("PASSWORD")
+    username = os.getenv("hafele_username")
+    password = os.getenv("hafele_password")
 
     # Close the initial warning page
     try:
@@ -60,17 +70,14 @@ def handle_login():
     login_btn.click()
     time.sleep(10)
 
-    # Add the user agent here:
-    user_agent = os.getenv("USER_AGENT")
-
     # Save cookies after logging in
     try:
         with open("cookies.pkl", "wb") as file:
             print(driver.get_cookies())
             pickle.dump(driver.get_cookies(), file)
-        # Create the user agent file
+        # Save the user agent
         with open("user_agent.txt", "w") as file:
-            file.write(user_agent)
+            file.write(options.arguments[-1].split("=")[-1])
     except Exception as e:
         print(f"Failed to save cookies: {e}")
 
