@@ -194,7 +194,7 @@ def main():
     cookies = load_cookies(COOKIE_FILE)
 
     # Read stock codes from Excel
-    df = pd.read_excel(INPUT_FILE)
+    df = pd.read_excel(INPUT_FILE, nrows=10)
     stock_codes = df["stockCode"].tolist()
 
     # Prepare URLs
@@ -243,7 +243,7 @@ def main():
    # Send email with the results
     email = os.getenv("gmail_receiver_email_2")
     try:
-        send_mail_with_excel(email, OUTPUT_FILE)
+        # send_mail_with_excel(email, OUTPUT_FILE)
         print(f"Email sent to {email}")
     except Exception as e:
         print(f"Error sending email: {e}")
