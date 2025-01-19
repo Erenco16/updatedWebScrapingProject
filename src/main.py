@@ -88,14 +88,24 @@ def retrieve_product_data(url, cookies, retries=3):
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
 
-                # Check for group product table
-                group_table = soup.find("tr", id="productBomArticlesInformation")
-                if group_table:
-                    print("Group product detected. Fetching sub-product stock information.")
-                    return handle_group_product(soup, cookies)
+                # check if product exists
+                if does_product_exist(soup):
+                    # Check for group product table
+                    group_table = soup.find("tr", id="productBomArticlesInformation")
+                    if group_table:
+                        print("Group product detected. Fetching sub-product stock information.")
+                        return handle_group_product(soup, cookies)
 
-                # Process singular product
-                return handle_singular_product(soup)
+                    # Process singular product
+                    return handle_singular_product(soup)
+                else:
+                    return {
+                        "kdv_haric_tavsiye_edilen_perakende_fiyat": "urun hafele.com.tr de bulunmuyor",
+                        "kdv_haric_net_fiyat": "urun hafele.com.tr de bulunmuyor",
+                        "kdv_haric_satis_fiyati": "urun hafele.com.tr de bulunmuyor",
+                        "stok_durumu": "urun hafele.com.tr de bulunmuyor",
+                        "stock_amount": "urun hafele.com.tr de bulunmuyor",
+                    }
 
             else:
                 print(f"Request failed with status {response.status_code}. Retrying...")
@@ -113,6 +123,10 @@ def retrieve_product_data(url, cookies, retries=3):
         "stok_durumu": None,
         "stock_amount": None,
     }
+
+def does_product_exist(soup):
+    element = soup.select_one(".availability-flag")  # Locate the element
+    return bool(element and element.text.strip())  # Check if the element exists and has text
 
 
 def handle_singular_product(soup):
@@ -151,12 +165,13 @@ def handle_group_product(soup, cookies):
 
     return {
         **price_info,
-        "stok_durumu": "Group Product",
+        "stok_durumu": "set urun",
         "stock_amount": main_product_stock,
     }
 
+
 def retrieve_singular_stock(url, cookies):
-    """Fetch stock information for a singular product."""
+    """Fetch stock information for a singular product with a specific availability filter."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     }
@@ -165,8 +180,17 @@ def retrieve_singular_stock(url, cookies):
         response = requests.get(url, headers=headers, cookies=cookies, timeout=30)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, "html.parser")
-            stock_amount = soup.select_one(".qty-available")
-            return int(stock_amount.text.strip()) if stock_amount and stock_amount.text.strip().isdigit() else None
+
+            # Check for the availability condition
+            availability_flag = soup.select_one("span.availability-flag[style='color:#339C76']")
+            if availability_flag and "stokta mevcut" in availability_flag.text.strip().lower():
+                # Extract the stock amount if the condition is met
+                stock_amount = soup.select_one(".qty-available")
+                return int(stock_amount.text.strip()) if stock_amount and stock_amount.text.strip().isdigit() else None
+
+            # If the condition is not met, return 0
+            return 0
+
     except Exception as e:
         print(f"Error fetching singular stock: {e}")
     return None
@@ -192,6 +216,7 @@ def main():
 
     # Load cookies
     cookies = load_cookies(COOKIE_FILE)
+
 
     # Read stock codes from Excel
     df = pd.read_excel(INPUT_FILE)
