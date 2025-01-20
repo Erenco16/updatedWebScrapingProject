@@ -241,12 +241,13 @@ def main():
     print(f"File last modified: {time.ctime(os.path.getmtime(OUTPUT_FILE))}")
 
    # Send email with the results
-    email = os.getenv("gmail_receiver_email_2")
-    try:
-        send_mail_with_excel(email, OUTPUT_FILE)
-        print(f"Email sent to {email}")
-    except Exception as e:
-        print(f"Error sending email: {e}")
+    email_list = [os.getenv("gmail_receiver_email"), os.getenv("gmail_receiver_email_2")]
+    for email in email_list:
+        try:
+            send_mail_with_excel(email, OUTPUT_FILE)
+            print(f"Email sent to {email}")
+        except Exception as e:
+            print(f"Error sending email: {e}")
 
     end_time = time.time()
     print(f"Scraped {len(stock_codes)} products in {round((end_time - start_time) / 60, 2)} minutes.")
