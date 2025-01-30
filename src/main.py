@@ -217,8 +217,7 @@ def main():
     cookies = load_cookies(COOKIE_FILE)
 
 
-    Read stock codes from Excel
-    df = pd.read_excel(INPUT_FILE, nrows = 100)
+    df = pd.read_excel(INPUT_FILE)
     print(f"Number of products to be scraped: {len(df)}")
     stock_codes = df["stockCode"].tolist()
 
