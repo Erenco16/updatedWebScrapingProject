@@ -217,25 +217,11 @@ def main():
     cookies = load_cookies(COOKIE_FILE)
 
 
-    # Read stock codes from Excel
-    # df = pd.read_excel(INPUT_FILE, nrows = 100)
-    # print(f"Number of products to be scraped: {len(df)}")
-    # stock_codes = df["stockCode"].tolist()
+    Read stock codes from Excel
+    df = pd.read_excel(INPUT_FILE, nrows = 100)
+    print(f"Number of products to be scraped: {len(df)}")
+    stock_codes = df["stockCode"].tolist()
 
-    stock_codes = ["903.52.718",
-    "903.53.718",
-    "903.58.055",
-    "903.58.056",
-    "903.58.057",
-    "903.58.064",
-    "903.58.067",
-    "903.58.068",
-    "903.58.070",
-    "903.58.114",
-    "903.58.267",
-    "903.58.323",
-    "903.58.368",
-    "903.70.124"]
 
     # Prepare URLs
     base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
