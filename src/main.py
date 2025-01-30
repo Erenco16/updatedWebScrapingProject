@@ -125,8 +125,8 @@ def retrieve_product_data(url, cookies, retries=3):
     }
 
 def does_product_exist(soup):
-    element = soup.select_one(".availability-flag")  # Locate the element
-    return bool(element and element.text.strip())  # Check if the element exists and has text
+    product_table = soup.find("tr", id="productPriceInformation")
+    return product_table is not None
 
 
 def handle_singular_product(soup):
@@ -219,8 +219,24 @@ def main():
 
 
     # Read stock codes from Excel
-    df = pd.read_excel(INPUT_FILE, nrows = 100)
-    stock_codes = df["stockCode"].tolist()
+    # df = pd.read_excel(INPUT_FILE, nrows = 100)
+    # print(f"Number of products to be scraped: {len(df)}")
+    # stock_codes = df["stockCode"].tolist()
+
+    stock_codes = ["903.52.718",
+    "903.53.718",
+    "903.58.055",
+    "903.58.056",
+    "903.58.057",
+    "903.58.064",
+    "903.58.067",
+    "903.58.068",
+    "903.58.070",
+    "903.58.114",
+    "903.58.267",
+    "903.58.323",
+    "903.58.368",
+    "903.70.124"]
 
     # Prepare URLs
     base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
@@ -228,7 +244,7 @@ def main():
 
     # Scrape data using multithreading
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         future_to_code = {executor.submit(retrieve_product_data, url, cookies): code for url, code in product_urls}
         for future in concurrent.futures.as_completed(future_to_code):
             code = future_to_code[future]
