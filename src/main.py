@@ -128,7 +128,6 @@ def does_product_exist(soup):
     product_table = soup.find("tr", id="productPriceInformation")
     return product_table is not None
 
-
 def handle_singular_product(soup):
     """Handle singular product data extraction."""
     price_info = extract_price_info(soup)
