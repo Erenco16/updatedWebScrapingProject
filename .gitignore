@@ -162,5 +162,3 @@ cython_debug/
 #.idea/
 
 src/session_info.json
-
-src/test.py
