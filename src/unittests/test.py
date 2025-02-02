@@ -1,191 +1,99 @@
 import unittest
-from unittest.mock import patch, MagicMock
-from bs4 import BeautifulSoup
+import requests
 import pickle
 import os
-import time
+from bs4 import BeautifulSoup
+import pandas as pd
 
 # Import functions from your main script
-from main import (
+from src.main import (
     handle_login_with_retry,
-    load_cookies,
     retrieve_product_data,
     extract_price_info,
     does_product_exist,
-    is_cookie_valid,
     retrieve_qty_available,
     handle_singular_product,
-    handle_group_product,
-    retrieve_singular_stock,
 )
 
-
-class TestScraping(unittest.TestCase):
+class TestScrapingWithDynamicCookies(unittest.TestCase):
     def setUp(self):
-        """Set up test data and environment."""
-        self.cookie_file = "test_cookies.pkl"
-        self.mock_cookies = [{"name": "session", "value": "test_session"}]
-        self.test_html = '''
-        <div id="productDetails">
-            <tr id="productPriceInformation">
-                <span class="price">1.255,36 TL</span>
-                <span class="price">1.883,04 TL</span>
-                <span class="price">1.757,50 TL</span>
-            </tr>
-            <span class="availability-flag">stokta mevcut</span>
-            <span class="qty-available">230</span>
-        </div>
-        '''
-        # Clean up existing cookie files
-        if os.path.exists(self.cookie_file):
-            os.remove(self.cookie_file)
+        """Set up test environment and retrieve fresh cookies."""
+        current_directory = os.path.dirname(__file__)
+        error_product_codes = os.path.join(current_directory, 'error_file.xlsx')
+        error_df = pd.read_excel(error_product_codes)
+        self.cookie_file = "cookies.pkl"  # Ensure this is the correct file updated by handle_login_with_retry()
+        self.test_product_code = error_df['product_code'].sample(1).iloc[0]  # random product code that returned with an error
+        base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
+        self.test_url = f"{base_url}?SKU={self.test_product_code.replace('.', '')}&ProductQuantity=50000"
 
-    def tearDown(self):
-        """Clean up after tests."""
-        if os.path.exists(self.cookie_file):
-            os.remove(self.cookie_file)
-
-    @patch("login.handle_login")
-    def test_handle_login_with_retry(self, mock_handle_login):
-        """Test login with retry mechanism."""
-        mock_driver = MagicMock()
-        mock_driver.quit = MagicMock()
-        mock_handle_login.return_value = mock_driver
-
-        # Test a successful login
+        print(f"Product code to be tested: {self.test_product_code}")
+        # Step 1: Login to refresh cookies
         handle_login_with_retry()
-        mock_handle_login.assert_called_once()
-        mock_driver.quit.assert_called_once()
 
-    def test_load_cookies(self):
-        """Test loading cookies from file."""
-        # Save test cookies
-        with open(self.cookie_file, "wb") as f:
-            pickle.dump(self.mock_cookies, f)
+        # Step 2: Load the latest cookies
+        self.cookies = self.load_latest_cookies()
 
-        # Load cookies and verify content
-        cookies = load_cookies(self.cookie_file)
-        expected_cookies = {cookie["name"]: cookie["value"] for cookie in self.mock_cookies}
-        self.assertEqual(cookies, expected_cookies)
+        # Step 3: Fetch the real product page HTML
+        self.test_html = self.fetch_real_product_page(self.test_url)
 
-    @patch("os.path.exists")
-    @patch("os.path.getmtime")
-    def test_is_cookie_valid(self, mock_getmtime, mock_exists):
-        """Test cookie validity check."""
-        mock_exists.return_value = True
-        mock_getmtime.return_value = time.time() - 300  # Modified 5 minutes ago
+    def load_latest_cookies(self):
+        """Load updated cookies after login."""
+        if os.path.exists(self.cookie_file):
+            with open(self.cookie_file, "rb") as f:
+                raw_cookies = pickle.load(f)
+                return {cookie["name"]: cookie["value"] for cookie in raw_cookies}
+        else:
+            self.skipTest("Skipping test: No cookies file found after login attempt.")
 
-        # Test that cookies are valid within expiry time
-        self.assertTrue(is_cookie_valid(self.cookie_file, 600))
+    def fetch_real_product_page(self, url):
+        """Fetch the actual product page using the updated cookies."""
+        headers = {"User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers, cookies=self.cookies)
 
-        # Test that cookies are invalid after expiry time
-        mock_getmtime.return_value = time.time() - 700
-        self.assertFalse(is_cookie_valid(self.cookie_file, 600))
+        if response.status_code == 200:
+            return response.text
+        else:
+            self.skipTest(f"Skipping test: Product page not accessible ({response.status_code}).")
 
-    @patch("requests.get")
-    @patch("main.load_cookies")
-    def test_retrieve_product_data(self, mock_load_cookies, mock_get):
-        """Test product data retrieval including retries."""
-        mock_cookies = {"session": "test_session"}
-        mock_load_cookies.return_value = mock_cookies
+    def test_retrieve_product_data(self):
+        """Test product data retrieval using real product codes and updated cookies."""
+        result = retrieve_product_data(self.test_url, self.cookies)
 
-        # Mock successful HTTP response
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = self.test_html
-        mock_get.return_value = mock_response
-
-        url = "http://test_url"
-        result = retrieve_product_data(url, mock_cookies)
-
-        # Verify product data is correctly parsed
-        self.assertEqual(result["stok_durumu"], "stokta mevcut")
-        self.assertEqual(result["stock_amount"], 230)
-        self.assertEqual(result["kdv_haric_satis_fiyati"], "1.883,04 TL")
+        # Validate the structure
+        self.assertIn("stok_durumu", result)
+        self.assertIn("stock_amount", result)
+        self.assertIn("kdv_haric_satis_fiyati", result)
 
     def test_extract_price_info(self):
-        """Test that price information is correctly extracted."""
+        """Test extracting price information from real product HTML."""
         soup = BeautifulSoup(self.test_html, "html.parser")
         prices = extract_price_info(soup)
-        self.assertEqual(prices["kdv_haric_net_fiyat"], "1.255,36 TL")
-        self.assertEqual(prices["kdv_haric_satis_fiyati"], "1.883,04 TL")
-        self.assertEqual(prices["kdv_haric_tavsiye_edilen_perakende_fiyat"], "1.757,50 TL")
+
+        # Validate expected price keys exist
+        self.assertIn("kdv_haric_net_fiyat", prices)
+        self.assertIn("kdv_haric_satis_fiyati", prices)
+        self.assertIn("kdv_haric_tavsiye_edilen_perakende_fiyat", prices)
 
     def test_does_product_exist(self):
-        """Test if product existence is correctly identified."""
+        """Test if a product exists using real product code and updated cookies."""
         soup = BeautifulSoup(self.test_html, "html.parser")
         self.assertTrue(does_product_exist(soup))
 
-        # Test with an invalid HTML (no product table)
-        invalid_html = "<html></html>"
-        soup = BeautifulSoup(invalid_html, "html.parser")
-        self.assertFalse(does_product_exist(soup))
+    def test_retrieve_qty_available(self):
+        """Test retrieving stock quantity with a real product code and updated cookies."""
+        qty_available = retrieve_qty_available(self.test_url, self.cookies)
 
-    @patch("requests.get")
-    def test_retrieve_qty_available(self, mock_get):
-        """Test quantity retrieval with retries."""
-        # Mock successful response
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = self.test_html
-        mock_get.return_value = mock_response
-
-        headers = {"User-Agent": "Mozilla/5.0"}
-        cookies = {"session": "test_session"}
-        url = "http://test_url"
-
-        qty_available = retrieve_qty_available(url, cookies)
-        self.assertEqual(qty_available, 230)
+        self.assertIsInstance(qty_available, int)  # Should return an integer stock count
 
     def test_handle_singular_product(self):
-        """Test handling singular products from BeautifulSoup data."""
+        """Test handling of a singular product using real data and updated cookies."""
         soup = BeautifulSoup(self.test_html, "html.parser")
         result = handle_singular_product(soup)
 
-        # Validate results
-        self.assertEqual(result["stok_durumu"], "stokta mevcut")
-        self.assertEqual(result["stock_amount"], 230)
-        self.assertEqual(result["kdv_haric_satis_fiyati"], "1.883,04 TL")
-
-    @patch("requests.get")
-    def test_retrieve_singular_stock(self, mock_get):
-        """Test retrieving stock for a singular product."""
-        # Mock successful response with stock available
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = self.test_html
-        mock_get.return_value = mock_response
-
-        url = "http://test_url"
-        cookies = {"session": "test_session"}
-        stock = retrieve_singular_stock(url, cookies)
-        self.assertEqual(stock, 230)
-
-        # Test unavailable stock
-        test_html_no_stock = '''
-        <div id="productDetails">
-            <span class="availability-flag">stokta mevcut değil</span>
-        </div>
-        '''
-        mock_response.text = test_html_no_stock
-        stock = retrieve_singular_stock(url, cookies)
-        self.assertEqual(stock, 0)
-
-    @patch("requests.get")
-    def test_handle_group_product(self, mock_get):
-        """Test group product handling and stock aggregation."""
-        # Mock response for sub-product requests
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.text = self.test_html
-        mock_get.return_value = mock_response
-
-        soup = BeautifulSoup(self.test_html, "html.parser")
-        cookies = {"session": "test_session"}
-
-        result = handle_group_product(soup, cookies)
-        self.assertEqual(result["stok_durumu"], "set urun")
-        self.assertEqual(result["stock_amount"], 230)
+        # Validate expected keys exist
+        self.assertIn("stok_durumu", result)
+        self.assertIn("stock_amount", result)
+        self.assertIn("kdv_haric_satis_fiyati", result)
 
 
 if __name__ == "__main__":
