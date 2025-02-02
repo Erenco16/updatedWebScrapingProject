@@ -224,8 +224,7 @@ def main():
     # stock_codes = df["stockCode"].tolist()
 
     df = pd.read_excel("/src/input/product_codes.xlsx")
-    filtered_data = df[df["stok_durumu"] == "Error"]
-    stock_codes = filtered_data["stockCode"].tolist()
+    stock_codes = df["stockCode"].tolist()
 
     # Prepare URLs
     base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
