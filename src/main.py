@@ -54,7 +54,7 @@ def retrieve_qty_available(url, cookies, retries=3):
 
     for attempt in range(retries):
         try:
-            response = requests.get(url, headers=headers, cookies=cookies, timeout=30)
+            response = requests.get(url, headers=headers, cookies=cookies, timeout=60)
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
                 qty_available_elements = soup.select(".qty-available")
@@ -83,7 +83,7 @@ def retrieve_product_data(url, cookies, retries=3):
     for attempt in range(retries):
         try:
             print(f"Requesting URL: {url}")
-            response = requests.get(url, headers=headers, cookies=cookies, timeout=30)
+            response = requests.get(url, headers=headers, cookies=cookies, timeout=60)
 
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
@@ -177,7 +177,7 @@ def retrieve_singular_stock(url, cookies):
     }
 
     try:
-        response = requests.get(url, headers=headers, cookies=cookies, timeout=30)
+        response = requests.get(url, headers=headers, cookies=cookies, timeout=60)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, "html.parser")
 
@@ -223,20 +223,9 @@ def main():
     # print(f"Number of products to be scraped: {len(df)}")
     # stock_codes = df["stockCode"].tolist()
 
-    stock_codes = ["903.52.718",
-    "903.53.718",
-    "903.58.055",
-    "903.58.056",
-    "903.58.057",
-    "903.58.064",
-    "903.58.067",
-    "903.58.068",
-    "903.58.070",
-    "903.58.114",
-    "903.58.267",
-    "903.58.323",
-    "903.58.368",
-    "903.70.124"]
+    df = pd.read_excel("/src/unittests/error_file.xlsx")
+    filtered_data = df[df["stok_durumu"] == "Error"]
+    stock_codes = filtered_data["stockCode"].tolist()
 
     # Prepare URLs
     base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
@@ -244,17 +233,15 @@ def main():
 
     # Scrape data using multithreading
     results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        future_to_code = {executor.submit(retrieve_product_data, url, cookies): code for url, code in product_urls}
-        for future in concurrent.futures.as_completed(future_to_code):
-            code = future_to_code[future]
-            try:
-                result = future.result()
-                result["stockCode"] = code
-                results.append(result)
-            except Exception as e:
-                print(f"Error processing stock code {code}: {e}")
-                results.append({"stockCode": code, "stok_durumu": "Error", "stock_amount": None})
+    # Single-threaded execution of product data retrieval
+    for url, code in product_urls:
+        try:
+            result = retrieve_product_data(url, cookies)
+            result["stockCode"] = code
+            results.append(result)
+        except Exception as e:
+            print(f"Error processing stock code {code}: {e}")
+            results.append({"stockCode": code, "stok_durumu": "Error", "stock_amount": None})
 
     # Save results to Excel
     if os.path.exists(OUTPUT_FILE):
