@@ -7,7 +7,6 @@ import time
 import os
 from dotenv import load_dotenv
 from send_mail import send_mail_with_excel
-import concurrent.futures
 
 load_dotenv()
 
@@ -270,7 +269,7 @@ def main():
    # Send email with the results
     email = os.getenv("gmail_receiver_email_2")
     try:
-        send_mail_with_excel("erenbasaran50@gmail.com", OUTPUT_FILE)
+        send_mail_with_excel(email, OUTPUT_FILE)
         print(f"Email sent to {email}")
     except Exception as e:
         print(f"Error sending email: {e}")

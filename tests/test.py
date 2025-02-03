@@ -22,7 +22,7 @@ class TestScrapingWithDynamicCookies(unittest.TestCase):
         error_product_codes = os.path.join(current_directory, 'error_file.xlsx')
         error_df = pd.read_excel(error_product_codes)
         self.cookie_file = "cookies.pkl"  # Ensure this is the correct file updated by handle_login_with_retry()
-        self.test_product_code = error_df['product_code'].sample(1).iloc[0]  # random product code that returned with an error
+        self.test_product_code = error_df['stockCode'].sample(1).iloc[0]  # random product code that returned with an error
         base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
         self.test_url = f"{base_url}?SKU={self.test_product_code.replace('.', '')}&ProductQuantity=50000"
 
