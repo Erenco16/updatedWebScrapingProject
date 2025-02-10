@@ -1,0 +1,22 @@
+name: Run Tests in Docker
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      selenium:
+        image: selenium/standalone-chrome
+        ports:
+          - 4444:4444
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Build Docker Images
+        run: docker-compose build tests
+
+      - name: Run Tests
+        run: docker-compose run --rm tests
