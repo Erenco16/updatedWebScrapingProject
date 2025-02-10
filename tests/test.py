@@ -17,7 +17,7 @@ load_dotenv()
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
 # Import main functions for testing
-from main import (
+from src.main import (
     handle_singular_product,
     retrieve_product_data,
     retrieve_qty_available,
