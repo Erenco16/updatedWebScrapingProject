@@ -151,7 +151,7 @@ def handle_group_product(soup, cookies):
         sku_element = row.find("a", class_="product-sku-title")
         if sku_element:
             sub_product_sku = sku_element.text.strip().replace(".", "")
-            sub_url = f"{base_url}?SKU={sub_product_sku}&ProductQuantity=200000&SynchronizationAjaxToken=1"
+            sub_url = f"{base_url}?SKU={sub_product_sku}&ProductQuantity=20000&SynchronizationAjaxToken=1"
             sub_stock = retrieve_singular_stock(sub_url, cookies)
             if sub_stock is not None:
                 sub_product_stocks.append(sub_stock)
