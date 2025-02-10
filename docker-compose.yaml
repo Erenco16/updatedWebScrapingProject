@@ -17,16 +17,6 @@ services:
       - SE_EVENT_BUS_PUBLISH_PORT=4442
       - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
 
-  firefox:
-    image: seleniarm/node-firefox:latest
-    container_name: selenium-node-firefox
-    depends_on:
-      - selenium-hub
-    environment:
-      - SE_EVENT_BUS_HOST=selenium-hub
-      - SE_EVENT_BUS_PUBLISH_PORT=4442
-      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
-
   webscrape:
     build:
       context: .
@@ -43,6 +33,7 @@ services:
       - ./src/output:/src/output  # If there is an output directory
       - ./wait-for-it.sh:/wait-for-it.sh  # Mount the wait-for-it script
     command: ["bash", "/wait-for-it.sh", "selenium-hub", "4444", "--", "python", "main.py"]
+
 
 volumes:
   input:  # Define the input volume

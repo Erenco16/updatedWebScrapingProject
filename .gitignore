@@ -162,3 +162,7 @@ cython_debug/
 #.idea/
 
 src/session_info.json
+
+src/tests/cookies.pkl
+src/tests/session_info.json
+src/tests/user_agent.txt
