@@ -17,7 +17,7 @@ load_dotenv()
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
 # Import main functions for testing
-from main import (
+from src.main import (
     handle_singular_product,
     retrieve_product_data,
     retrieve_qty_available,
@@ -195,7 +195,7 @@ def main():
 
     # Step 2: Provide product code
     product_code = input("Enter product code to test (e.g., 806.68.713): ").strip()
-    product_url = f"{BASE_PRODUCT_URL}?SKU={product_code.replace('.', '')}&ProductQuantity=50000"
+    product_url = f"{BASE_PRODUCT_URL}?SKU={product_code.replace('.', '')}&ProductQuantity=20000"
     print(f"\nTesting product URL: {product_url}")
 
     # Step 3: Fetch product page
