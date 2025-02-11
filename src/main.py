@@ -123,17 +123,30 @@ def retrieve_product_data(url, cookies, retries=3):
         "stock_amount": None,
     }
 
+
 def does_product_exist(soup):
     product_table = soup.find("tr", id="productPriceInformation")
-    return product_table is not None
+    if not product_table:
+        return False
+
+    price_span = product_table.find("span", class_="price")
+    if price_span and price_span.get_text(strip=True) == "N/A":
+        return False
+
+    return True
 
 
 def handle_singular_product(soup):
     """Handle singular product data extraction."""
     price_info = extract_price_info(soup)
-    stock_info = soup.select_one(".availability-flag").text.strip()
-    stock_amount = soup.select_one(".qty-available")
-    stock_amount = int(stock_amount.text.strip()) if stock_amount and stock_amount.text.strip().isdigit() else None
+
+    stock_info_element = soup.select_one(".availability-flag")
+    stock_info = stock_info_element.text.strip() if stock_info_element else "Stok bilgisi bulunamadi"
+
+    stock_amount_element = soup.select_one(".qty-available")
+    stock_amount = (int(stock_amount_element.text.strip())
+                    if stock_amount_element and stock_amount_element.text.strip().isdigit()
+                    else None)
 
     return {
         **price_info,
@@ -227,7 +240,7 @@ def main():
 
     # Prepare URLs
     base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
-    product_urls = [(f"{base_url}?SKU={code.replace('.', '')}&ProductQuantity=50000", code) for code in stock_codes]
+    product_urls = [(f"{base_url}?SKU={code.replace('.', '')}&ProductQuantity=20000", code) for code in stock_codes]
 
     # Scrape data using multithreading
     results = []
@@ -239,7 +252,7 @@ def main():
             results.append(result)
         except Exception as e:
             print(f"Error processing stock code {code}: {e}")
-            results.append({"stockCode": code, "stok_durumu": "Error", "stock_amount": None})
+            results.append({"stockCode": code, "stok_durumu": f"Error: {e}", "stock_amount": None})
 
     # Save results to Excel
     if os.path.exists(OUTPUT_FILE):
