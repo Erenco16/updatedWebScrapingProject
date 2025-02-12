@@ -9,13 +9,6 @@ from dotenv import load_dotenv
 from send_mail import send_mail_with_excel
 import random
 
-load_dotenv()
-
-COOKIE_FILE = "cookies.pkl"
-INPUT_FILE = "/src/input/product_codes.xlsx"  # Use absolute path for consistency
-OUTPUT_FILE = "/src/output/product_data_results.xlsx"  # Use absolute path for consistency
-COOKIE_EXPIRY = 600  # 10 minutes
-
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -28,44 +21,12 @@ PROXIES = [
     "http://149.86.159.4:8080",
 ]
 
-def get_random_headers():
-    """Return random headers to avoid detection."""
-    return {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+load_dotenv()
 
-
-def load_cookies(cookie_file):
-    """Load cookies from the saved file."""
-    with open(cookie_file, "rb") as file:
-        cookies = pickle.load(file)
-    return {cookie['name']: cookie['value'] for cookie in cookies}
-
-
-def is_cookie_valid(cookie_file, expiry_time):
-    """Check if the cookies file exists and is not expired."""
-    return (
-        os.path.exists(cookie_file)
-        and (time.time() - os.path.getmtime(cookie_file)) < expiry_time
-    )
-
-
-def handle_login_with_retry():
-    """Handle login and retry on failure."""
-    while True:
-        try:
-            print("Attempting to log in...")
-            driver = login.handle_login()
-            driver.quit()
-            print("Login successful.")
-            return
-        except Exception as e:
-            print(f"Login attempt failed: {e}")
-            print("Retrying in 5 seconds...")
-            time.sleep(5)
-
-
+COOKIE_FILE = "cookies.pkl"
+INPUT_FILE = "/src/input/product_codes.xlsx"  # Use absolute path for consistency
+OUTPUT_FILE = "/src/output/product_data_results.xlsx"  # Use absolute path for consistency
+COOKIE_EXPIRY = 600  # 10 minutes
 
 def retrieve_product_data(url, cookies, retries=3):
     """Fetch and parse the HTML to extract stock, price, and group product information."""
@@ -241,30 +202,6 @@ def extract_price_info(soup):
         "kdv_haric_satis_fiyati": prices[1].text.strip() if len(prices) > 1 else None,
     }
 
-
-import login
-import requests
-import pickle
-from bs4 import BeautifulSoup
-import pandas as pd
-import time
-import os
-from dotenv import load_dotenv
-from send_mail import send_mail_with_excel
-import random
-
-load_dotenv()
-
-COOKIE_FILE = "cookies.pkl"
-INPUT_FILE = "/src/input/product_codes.xlsx"  # Use absolute path for consistency
-OUTPUT_FILE = "/src/output/product_data_results.xlsx"  # Use absolute path for consistency
-COOKIE_EXPIRY = 600  # 10 minutes
-
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:93.0) Gecko/20100101 Firefox/93.0",
-]
 
 def get_random_headers():
     """Return random headers to avoid detection."""
