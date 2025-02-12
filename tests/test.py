@@ -20,7 +20,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src'
 from src.main import (
     handle_singular_product,
     retrieve_product_data,
-    retrieve_qty_available,
     extract_price_info,
     does_product_exist
 )
@@ -31,7 +30,7 @@ BASE_PRODUCT_URL = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site
 
 
 def handle_login():
-    """Perform login using regular Selenium (not Selenium Grid)."""
+    """Perform login using Selenium and save cookies."""
     options = Options()
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--start-maximized")
@@ -40,24 +39,19 @@ def handle_login():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument(f"user-agent={os.getenv('USER_AGENT', 'Mozilla/5.0')}")
 
-    # Use regular Selenium for local execution
     driver = webdriver.Chrome(options=options)
 
-    # Open the website
     driver.get("https://www.hafele.com.tr/")
     time.sleep(5)
 
-    # Get username and password from environment variables
     username = os.getenv("hafele_username")
     password = os.getenv("hafele_password")
 
-    # Close the initial warning page
     try:
-        element = driver.find_element(By.XPATH,
-                                      "//a[contains(@class, 'a-btn') and contains(@class, 't-btn') and contains(@class, 't-btn-secondary') and contains(@class, 'modal-link')]")
+        element = driver.find_element(By.XPATH, "//a[contains(@class, 'a-btn') and contains(@class, 'modal-link')]")
         driver.execute_script("arguments[0].click();", element)
-    except Exception as e:
-        print(f"Warning page close failed: {e}")
+    except Exception:
+        pass  # If the warning page doesn't appear, continue
 
     # Handle login
     login_header = driver.find_element(By.ID, "headerLoginLinkAction")
@@ -68,30 +62,23 @@ def handle_login():
     username_input.send_keys(username)
     password_input.send_keys(password)
 
-    # Keep session open checkbox
     try:
         checkbox = driver.find_element(By.ID, "divShopLoginForm_RememberLogin_headerItemLogin")
         checkbox.click()
-    except Exception as e:
-        print(f"Checkbox click failed: {e}")
+    except Exception:
+        pass  # Ignore checkbox error if not present
 
     time.sleep(2)
 
-    # Login button click
     login_btn = driver.find_element(By.XPATH, "//button[@data-testid='ajaxAccountLoginFormBtn']")
     login_btn.click()
     time.sleep(10)
 
-    # Save cookies after logging in
-    try:
-        with open(COOKIE_FILE, "wb") as file:
-            pickle.dump(driver.get_cookies(), file)
-        with open("user_agent.txt", "w") as file:
-            file.write(options.arguments[-1].split("=")[-1])
-    except Exception as e:
-        print(f"Failed to save cookies: {e}")
+    # Save cookies
+    with open(COOKIE_FILE, "wb") as file:
+        pickle.dump(driver.get_cookies(), file)
 
-    # Save session information from localStorage
+    # Save session information
     try:
         session_info = driver.execute_script("return window.localStorage.getItem('sessionInfoData');")
         if session_info:
@@ -99,32 +86,34 @@ def handle_login():
             with open("session_info.json", "w") as file:
                 json.dump(session_info_json, file, indent=4)
             print(f"Session info saved: {session_info_json}")
-        else:
-            print("No sessionInfoData found in localStorage.")
-    except Exception as e:
-        print(f"Failed to save session info: {e}")
+    except Exception:
+        pass  # Ignore session info error if not present
 
-    return driver
+    driver.quit()
 
 
 def load_cookies():
-    """Load cookies from the cookies file if they exist."""
+    """Load cookies from file or perform login if missing."""
     if os.path.exists(COOKIE_FILE):
         with open(COOKIE_FILE, "rb") as file:
-            cookies = pickle.load(file)
-        print("Cookies loaded.")
-        return {cookie["name"]: cookie["value"] for cookie in cookies}
+            return pickle.load(file)
     else:
-        print("Cookies not found. Logging in...")
-        handle_login()  # Login before proceeding
-        return load_cookies()
+        print("No existing cookies found. Logging in...")
+        handle_login()
+        with open(COOKIE_FILE, "rb") as file:
+            return pickle.load(file)
 
 
 def fetch_product_page(url, cookies):
     """Fetch the product page HTML using the provided cookies."""
     headers = {"User-Agent": "Mozilla/5.0"}
+    session = requests.Session()
+
+    for cookie in cookies:
+        session.cookies.set(cookie['name'], cookie['value'])
+
     try:
-        response = requests.get(url, headers=headers, cookies=cookies, timeout=60)
+        response = session.get(url, headers=headers, timeout=60)
         if response.status_code == 200:
             print("Product page fetched successfully.")
             return response.text
@@ -166,16 +155,6 @@ def test_does_product_exist(soup):
         print(f"Error in does_product_exist: {e}")
 
 
-def test_retrieve_qty_available(url, cookies):
-    """Test the `retrieve_qty_available()` function."""
-    print("\nTesting retrieve_qty_available()...")
-    try:
-        qty = retrieve_qty_available(url, cookies)
-        print(f"Quantity available: {qty}")
-    except Exception as e:
-        print(f"Error in retrieve_qty_available: {e}")
-
-
 def test_retrieve_product_data(url, cookies):
     """Test the `retrieve_product_data()` function."""
     print("\nTesting retrieve_product_data()...")
@@ -212,7 +191,6 @@ def main():
     test_handle_singular_product(soup)
     test_extract_price_info(soup)
     test_does_product_exist(soup)
-    test_retrieve_qty_available(product_url, cookies)
     test_retrieve_product_data(product_url, cookies)
 
 
