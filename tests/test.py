@@ -145,21 +145,21 @@ def test_extract_price_info(soup):
         print(f"Error in extract_price_info: {e}")
 
 
-def test_does_product_exist(soup):
+def test_does_product_exist(code, cookies):
     """Test the `does_product_exist()` function."""
     print("\nTesting does_product_exist()...")
     try:
-        result = does_product_exist(soup)
+        result = does_product_exist(code=code, cookies=cookies)
         print(f"Product exists: {result}")
     except Exception as e:
         print(f"Error in does_product_exist: {e}")
 
 
-def test_retrieve_product_data(url, cookies):
+def test_retrieve_product_data(url, code, cookies):
     """Test the `retrieve_product_data()` function."""
     print("\nTesting retrieve_product_data()...")
     try:
-        result = retrieve_product_data(url, cookies)
+        result = retrieve_product_data(url=url, code=code, cookies=cookies)
         print(f"Product data: {result}")
     except Exception as e:
         print(f"Error in retrieve_product_data: {e}")
@@ -190,8 +190,8 @@ def main():
     print("\n--- Running Function Tests ---")
     test_handle_singular_product(soup)
     test_extract_price_info(soup)
-    test_does_product_exist(soup)
-    test_retrieve_product_data(product_url, cookies)
+    test_does_product_exist(code=product_code, cookies=cookies)
+    test_retrieve_product_data(url=product_url, cookies=cookies, code=product_code)
 
 
 if __name__ == "__main__":
