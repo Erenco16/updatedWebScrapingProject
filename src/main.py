@@ -28,7 +28,7 @@ INPUT_FILE = "/src/input/product_codes.xlsx"  # Use absolute path for consistenc
 OUTPUT_FILE = "/src/output/product_data_results.xlsx"  # Use absolute path for consistency
 COOKIE_EXPIRY = 600  # 10 minutes
 
-def retrieve_product_data(url, cookies, retries=3):
+def retrieve_product_data(url, code, cookies, retries=3):
     """Fetch and parse the HTML to extract stock, price, and group product information."""
     for attempt in range(retries):
         try:
@@ -45,7 +45,7 @@ def retrieve_product_data(url, cookies, retries=3):
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
 
-                if does_product_exist(soup):
+                if does_product_exist(code=code, cookies=cookies):
                     group_table = soup.find("tr", id="productBomArticlesInformation")
                     return handle_group_product(soup, cookies) if group_table else handle_singular_product(soup)
                 else:
@@ -75,18 +75,42 @@ def retrieve_product_data(url, cookies, retries=3):
     }
 
 
+# checking the existence of the product by sending a request to the search endpoint,
+# being different from our general scraping logic
+def does_product_exist(code, cookies):
+    print(f"Checking existence of product {code}...")
+    # Define the URL and search term
+    url = f"https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewParametricSearch-SimpleOfferSearch?SearchType=all&SearchTerm={code}"
 
+    # Send a GET request to the URL
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
 
-def does_product_exist(soup):
-    product_table = soup.find("tr", id="productPriceInformation")
-    if not product_table:
+    # Ensure cookies are in the correct format (convert list of dicts to a single dict)
+    if isinstance(cookies, list):
+        cookies = {cookie["name"]: cookie["value"] for cookie in cookies}
+
+    # Perform the request
+    response = requests.get(url, headers=headers, cookies=cookies)
+    print(f"Url for search {url}")
+    if response.status_code != 200:
+        raise Exception(f"Failed to fetch the URL, status code: {response.status_code}")
+
+    # Parse the response HTML using BeautifulSoup
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    # Locate the specific element
+    error_message = soup.find("p", class_="headlineStyle4")
+
+    # Check if the error message contains the code
+    if error_message and f"{code} için aramanız başarısız oldu." in error_message.text:
+        # The product does not exist if the error message is found
         return False
 
-    price_span = product_table.find("span", class_="price")
-    if price_span and price_span.get_text(strip=True) == "N/A":
-        return False
-
+    # If the error message is not found, the product exists
     return True
+
 
 
 def handle_singular_product(soup):
@@ -262,7 +286,8 @@ def main():
         results = []
         for url, code in product_urls:
             try:
-                result = retrieve_product_data(url, cookies)
+                print(f"Scraping data for stock code {code}...")
+                result = retrieve_product_data(url=url, code=code, cookies=cookies)
                 result["stockCode"] = code
                 results.append(result)
             except Exception as e:
