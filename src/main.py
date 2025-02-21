@@ -320,9 +320,11 @@ def main():
 
     # Send email with results
     email = os.getenv("gmail_receiver_email_2")
+    email_2 = os.getenv("gmail_receiver_email")
     try:
         send_mail_with_excel(email, OUTPUT_FILE)
-        print(f"📧 Email sent to {email}")
+        send_mail_with_excel(email_2, OUTPUT_FILE)
+        print(f"📧 Email sent to {email} and {email_2}")
     except Exception as e:
         print(f"❌ Error sending email: {e}")
 
