@@ -56,7 +56,7 @@ def refresh_login():
                 return
             time.sleep(5)
 
-def retrieve_product_data(url, code, cookies, retries=3):
+def retrieve_product_data(url, code, cookie_information, retries=3):
     """Fetch and parse the HTML to extract stock, price, and group product information."""
     for attempt in range(retries):
         try:
@@ -65,17 +65,17 @@ def retrieve_product_data(url, code, cookies, retries=3):
             print(f"Requesting URL: {url}")
 
             # Convert cookies list to dictionary if necessary
-            if isinstance(cookies, list):
-                cookies = {cookie['name']: cookie['value'] for cookie in cookies}
+            if isinstance(cookie_information, list):
+                cookie_information = {cookie['name']: cookie['value'] for cookie in cookie_information}
 
-            response = requests.get(url, headers=headers, cookies=cookies, timeout=60)
+            response = requests.get(url, headers=headers, cookies=cookie_information, timeout=60)
 
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
 
-                if does_product_exist(code=code, cookies=cookies):
+                if does_product_exist(code=code, cookies=cookie_information):
                     group_table = soup.find("tr", id="productBomArticlesInformation")
-                    return handle_group_product(soup, cookies) if group_table else handle_singular_product(soup)
+                    return handle_group_product(soup, cookie_information) if group_table else handle_singular_product(soup)
                 else:
                     return {
                         "kdv_haric_tavsiye_edilen_perakende_fiyat": "urun hafele.com.tr de bulunmuyor",
@@ -303,7 +303,7 @@ def main():
     for url, code in product_urls:
         try:
             print(f"Scraping data for stock code {code}...")
-            result = retrieve_product_data(url=url, code=code, cookies=cookies)
+            result = retrieve_product_data(url=url, code=code, cookie_information=cookies)
             result["stockCode"] = code
             results.append(result)
         except Exception as e:
