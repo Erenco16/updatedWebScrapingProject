@@ -159,7 +159,7 @@ def test_retrieve_product_data(url, code, cookies):
     """Test the `retrieve_product_data()` function."""
     print("\nTesting retrieve_product_data()...")
     try:
-        result = retrieve_product_data(url=url, code=code, cookies=cookies)
+        result = retrieve_product_data(url=url, code=code, cookie_information=cookies)
         print(f"Product data: {result}")
     except Exception as e:
         print(f"Error in retrieve_product_data: {e}")
