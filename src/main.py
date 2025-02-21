@@ -8,6 +8,7 @@ import os
 from dotenv import load_dotenv
 from send_mail import send_mail_with_excel
 import random
+import threading
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36",
@@ -27,6 +28,33 @@ COOKIE_FILE = "cookies.pkl"
 INPUT_FILE = "/src/input/product_codes.xlsx"  # Use absolute path for consistency
 OUTPUT_FILE = "/src/output/product_data_results.xlsx"  # Use absolute path for consistency
 COOKIE_EXPIRY = 600  # 10 minutes
+LOGIN_INTERVAL = 300 # 5 min
+
+stop_refreshing = False  # Global flag to stop the login refresh loop
+
+def refresh_login():
+    """Login every 5 minutes to refresh cookies while scraping is running."""
+    global cookies
+    while not stop_refreshing:  # Only run while scraping is active
+        print("\n🔄 Refreshing login and updating cookies...\n")
+        try:
+            driver = login.handle_login()
+            driver.quit()
+            print("✅ Login successful.")
+        except Exception as e:
+            print(f"❌ Login failed: {e}")
+
+        if os.path.exists(COOKIE_FILE):
+            cookies = load_cookies(COOKIE_FILE)
+        else:
+            print("⚠️ Warning: Cookies file not found after login.")
+
+        # Wait 5 minutes before next login refresh
+        for _ in range(LOGIN_INTERVAL // 5):  # Check every 5 seconds if scraping has finished
+            if stop_refreshing:
+                print("🛑 Stopping login refresh thread.")
+                return
+            time.sleep(5)
 
 def retrieve_product_data(url, code, cookies, retries=3):
     """Fetch and parse the HTML to extract stock, price, and group product information."""
@@ -247,78 +275,58 @@ def is_cookie_valid(cookie_file, expiry_time):
         and (time.time() - os.path.getmtime(cookie_file)) < expiry_time
     )
 
-def handle_login_with_retry():
-    """Handle login and retry on failure."""
-    while True:
-        try:
-            print("Attempting to log in...")
-            driver = login.handle_login()
-            driver.quit()
-            print("Login successful.")
-            return
-        except Exception as e:
-            print(f"Login attempt failed: {e}")
-            print("Retrying in 5 seconds...")
-            time.sleep(5)
-
 def main():
-    """Continuously run the scraper and login every 5 minutes"""
-    while True:
-        start_time = time.time()
+    """Run the scraper while refreshing login in parallel."""
+    global cookies
 
-        # Ensure valid cookies
-        if not is_cookie_valid(COOKIE_FILE, COOKIE_EXPIRY):
-            print("\n🔄 Cookies expired or missing. Logging in again...\n")
-            handle_login_with_retry()
+    # Start login refresher thread
+    login_thread = threading.Thread(target=refresh_login, daemon=True)
+    login_thread.start()  # This runs in the background without blocking execution
 
-        # Load cookies
+    # Load cookies
+    if os.path.exists(COOKIE_FILE):
         cookies = load_cookies(COOKIE_FILE)
+    else:
+        print("\n❌ No valid cookies found. Performing initial login...\n")
+        login.handle_login()  # Only login once if cookies are missing
 
-        # Read stock codes from Excel
-        df = pd.read_excel(INPUT_FILE)
-        stock_codes = df["stockCode"].tolist()
+    # Read stock codes from Excel
+    df = pd.read_excel(INPUT_FILE)
+    stock_codes = df["stockCode"].tolist()
 
-        # Prepare URLs
-        base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
-        product_urls = [(f"{base_url}?SKU={code.replace('.', '')}&ProductQuantity=20000", code) for code in stock_codes]
+    # Prepare URLs
+    base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
+    product_urls = [(f"{base_url}?SKU={code.replace('.', '')}&ProductQuantity=20000", code) for code in stock_codes]
 
-        # Scrape data
-        results = []
-        for url, code in product_urls:
-            try:
-                print(f"Scraping data for stock code {code}...")
-                result = retrieve_product_data(url=url, code=code, cookies=cookies)
-                result["stockCode"] = code
-                results.append(result)
-            except Exception as e:
-                print(f"Error processing stock code {code}: {e}")
-                results.append({"stockCode": code, "stok_durumu": f"Error: {e}", "stock_amount": None})
-
-        # Save results to Excel
-        if os.path.exists(OUTPUT_FILE):
-            os.remove(OUTPUT_FILE)  # Ensure no old file exists
-
-        output_data = pd.DataFrame(results)
-        output_data = output_data[
-            ["stockCode", "stock_amount", "stok_durumu", "kdv_haric_satis_fiyati", "kdv_haric_net_fiyat", "kdv_haric_tavsiye_edilen_perakende_fiyat"]
-        ]
-        output_data.to_excel(OUTPUT_FILE, index=False)
-        print(f"Results saved to {OUTPUT_FILE}")
-
-        # Send email with results
-        email = os.getenv("gmail_receiver_email_2")
+    # Scrape data
+    results = []
+    for url, code in product_urls:
         try:
-            send_mail_with_excel(email, OUTPUT_FILE)
-            print(f"Email sent to {email}")
+            print(f"Scraping data for stock code {code}...")
+            result = retrieve_product_data(url=url, code=code, cookies=cookies)
+            result["stockCode"] = code
+            results.append(result)
         except Exception as e:
-            print(f"Error sending email: {e}")
+            print(f"Error processing stock code {code}: {e}")
+            results.append({"stockCode": code, "stok_durumu": f"Error: {e}", "stock_amount": None})
 
-        end_time = time.time()
-        print(f"Scraped {len(stock_codes)} products in {round((end_time - start_time) / 60, 2)} minutes.")
+    # Save results to Excel
+    if os.path.exists(OUTPUT_FILE):
+        os.remove(OUTPUT_FILE)
 
-        # Wait 5 minutes before next cycle
-        print("\n⏳ Waiting for 5 minutes before the next login & scraping cycle...\n")
-        time.sleep(300)  # 5 minutes
+    output_data = pd.DataFrame(results)
+    output_data.to_excel(OUTPUT_FILE, index=False)
+    print(f"✅ Results saved to {OUTPUT_FILE}")
+
+    # Send email with results
+    email = os.getenv("gmail_receiver_email_2")
+    try:
+        send_mail_with_excel(email, OUTPUT_FILE)
+        print(f"📧 Email sent to {email}")
+    except Exception as e:
+        print(f"❌ Error sending email: {e}")
+
+    print(f"\n✅ Scraping complete. Process will exit now.\n")
 
 if __name__ == "__main__":
     main()
