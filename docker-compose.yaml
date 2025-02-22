@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   auth_service:
     build:
@@ -7,42 +5,58 @@ services:
       dockerfile: Dockerfile.auth
     container_name: auth_service
     ports:
-      - "5000:5000"
+      - "5001:5001"
     env_file:
       - .env
     volumes:
-      - ./src/auth:/app/src/auth
-    command: ["/app/src/input/start.sh"]  # Runs both scripts
+      - ./src/input:/app/src/input
+    command: ["/bin/sh", "-c", "chmod +x /app/src/input/start.sh && /app/src/input/start.sh"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:5001/get_token"]
+      interval: 20s
+      retries: 10
+      start_period: 30s
+      timeout: 10s
 
+  request_operations:
+    build:
+      context: .
+      dockerfile: Dockerfile.auth
+    container_name: request_operations
+    depends_on:
+      auth_service:
+        condition: service_healthy
+    env_file:
+      - .env
+    volumes:
+      - ./src/input:/app/src/input
+    command: ["python", "-u", "/app/src/input/request_operations.py"]
 
   selenium-hub:
     image: seleniarm/hub:latest
     container_name: selenium-hub
     ports:
       - "4444:4444"
+    depends_on:
+      request_operations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4444/status"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
 
   chrome:
     image: seleniarm/node-chromium:latest
     container_name: selenium-node-chrome
     depends_on:
-      - selenium-hub
+      selenium-hub:
+        condition: service_healthy
     environment:
       - SE_EVENT_BUS_HOST=selenium-hub
       - SE_EVENT_BUS_PUBLISH_PORT=4442
       - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
-
-  request_operations:
-    build:
-      context: .
-      dockerfile: Dockerfile.auth  # Uses the same image as auth_service
-    container_name: request_operations
-    depends_on:
-      - auth_service
-    env_file:
-      - .env  # Load environment variables
-    volumes:
-      - ./src/input:/app/src/input
-    command: ["python", "/app/src/auth/request_operations.py"]
 
   webscrape:
     build:
@@ -50,9 +64,14 @@ services:
       dockerfile: Dockerfile
     container_name: webscrape
     depends_on:
-      - request_operations
+      request_operations:
+        condition: service_completed_successfully
+      selenium-hub:
+        condition: service_healthy
+      chrome:
+        condition: service_started
     env_file:
-      - .env  # Load environment variables
+      - .env
     environment:
       - GRID_URL=http://selenium-hub:4444/wd/hub
     volumes:

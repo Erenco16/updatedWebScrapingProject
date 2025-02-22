@@ -28,9 +28,17 @@ def save_token(token_data):
 
 def load_token():
     """Load token data from a JSON file"""
+    TOKEN_FILE = "/app/src/input/token.json"
+
     if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(TOKEN_FILE, "r") as f:
+                token_data = json.load(f)
+                print(f"LOADED TOKEN: {token_data}")  # Debug için
+                return token_data
+        except json.JSONDecodeError as e:
+            print(f"Error loading token.json: {e}")
+            return None
     return None
 
 
@@ -62,7 +70,6 @@ def automate_login():
     """Fully automate the OAuth login process"""
     # Step 1: Generate the authentication URL
     state = secrets.token_urlsafe(16)
-    session["oauth_state"] = state
 
     auth_url = (
         f"{AUTH_URL}?"
@@ -121,9 +128,11 @@ def get_token():
     if token_data:
         access_token = token_data.get("access_token")
         refresh_token = token_data.get("refresh_token")
-
-        # Check if access token has expired
         expiry_time = token_data.get("timestamp", 0) + token_data.get("expires_in", 0)
+
+        print(f"DEBUG: Loaded token data -> {token_data}")  # Debug için
+        print(f"DEBUG: Current time -> {time.time()} | Expiry time -> {expiry_time}")
+
         if time.time() > expiry_time and refresh_token:
             print("Access token expired. Refreshing...")
             access_token = refresh_access_token(refresh_token)
@@ -131,10 +140,14 @@ def get_token():
         if access_token:
             return {"access_token": access_token}
 
-    # No valid token, automate login
     print("No valid token found. Automating login...")
     return {"access_token": automate_login()}
 
 
+
+@app.route("/")
+def home_page():
+    return "Flask web server is running now. This server is created for Ideasoft api connection purposes"
+
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=True, host="0.0.0.0", port=5001)

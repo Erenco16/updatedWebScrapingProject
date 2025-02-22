@@ -2,8 +2,9 @@ import requests
 import pandas as pd
 
 def get_access_token():
-    response = requests.get("http://127.0.0.1:5000/get_token")
+    response = requests.get("http://auth_service:5001/get_token")
     token_data = response.json()
+    print(f"ACCESS TOKEN IS HERE: {token_data['access_token']}")
     return token_data["access_token"]
 
 def get_all_products(brand_id):
@@ -18,7 +19,7 @@ def get_all_products(brand_id):
         print(f"Got page {page}")
 
         if response.status_code != 200:
-            print(f"Error: {response.status_code}")
+            print(f"Error: {response.text}")
             break
 
         data = response.json()
@@ -40,9 +41,12 @@ def write_to_excel(skus, file_name="product_codes.xlsx"):
 
     print(f"Data written to {file_name}")
 
-if __name__ == "__main__":
+def main():
     brand_id = 38
     all_skus = get_all_products(brand_id)
 
     # Write SKUs to Excel file
     write_to_excel(all_skus)
+
+if __name__ == "__main__":
+    main()
