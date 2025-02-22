@@ -23,7 +23,6 @@ def handle_login():
     # Selenium Grid Hub URL
     selenium_hub_url = os.getenv("GRID_URL", "http://selenium-hub:4444/wd/hub")
 
-
     # Initialize the Remote WebDriver
     driver = webdriver.Remote(
         command_executor=selenium_hub_url,
@@ -32,7 +31,6 @@ def handle_login():
 
     # Open the website
     driver.get("https://www.hafele.com.tr/")
-
     time.sleep(5)
 
     # Get username and password from environment variables
@@ -70,13 +68,19 @@ def handle_login():
     login_btn.click()
     time.sleep(10)
 
+    # Define the absolute paths based on the current file's directory (i.e., the /src folder)
+    base_path = os.path.dirname(__file__)
+    cookie_file_path = os.path.join(base_path, "cookies.pkl")
+    user_agent_file = os.path.join(base_path, "user_agent.txt")
+    session_info_file = os.path.join(base_path, "session_info.json")
+
     # Save cookies after logging in
     try:
-        with open("cookies.pkl", "wb") as file:
+        with open(cookie_file_path, "wb") as file:
             print(driver.get_cookies())
             pickle.dump(driver.get_cookies(), file)
         # Save the user agent
-        with open("user_agent.txt", "w") as file:
+        with open(user_agent_file, "w") as file:
             file.write(options.arguments[-1].split("=")[-1])
     except Exception as e:
         print(f"Failed to save cookies: {e}")
@@ -87,7 +91,7 @@ def handle_login():
         if session_info:
             # Parse and save sessionInfoData as JSON
             session_info_json = json.loads(session_info)
-            with open("session_info.json", "w") as file:
+            with open(session_info_file, "w") as file:
                 json.dump(session_info_json, file, indent=4)
                 file.flush()  # Ensure the data is written to disk
                 os.fsync(file.fileno())  # Force the OS to flush the file

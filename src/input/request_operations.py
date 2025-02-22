@@ -1,18 +1,52 @@
 import requests
-import os
-from dotenv import load_dotenv
+import pandas as pd
 
-load_dotenv()
+def get_access_token():
+    response = requests.get("http://auth_service:5001/get_token")
+    token_data = response.json()
+    print(f"ACCESS TOKEN IS HERE: {token_data['access_token']}")
+    return token_data["access_token"]
 
-client_id = os.getenv("ideasoft_client_id")
-client_secret = os.getenv("ideasoft_client_secret")
-redirect_uri = os.getenv("ideasoft_redirect_uri")
+def get_all_products(brand_id):
+    url = "https://evan.myideasoft.com/admin-api/products"
+    headers = {"Authorization": f"Bearer {get_access_token()}"}
+    products = []
+    page = 1
 
-# Construct the URL properly without unnecessary newline characters
-url = f"https://www.evan.com/panel/auth?client_id={client_id}&response_type=code&state=2b33fdd45jbevd6nam&redirect_uri={redirect_uri}"
+    while True:
+        params = {"brand": brand_id, "limit": 100, "page": page}
+        response = requests.get(url, headers=headers, params=params)
+        print(f"Got page {page}")
 
-# Make the GET request
-response = requests.get(url)
+        if response.status_code != 200:
+            print(f"Error: {response.text}")
+            break
 
-# Print the response
-print(response.text)
+        data = response.json()
+
+        if not data:  # If response is empty, stop fetching
+            break
+
+        products.extend(item['sku'] for item in data if 'sku' in item)
+        page += 1  # Go to next page
+
+    return products
+
+def write_to_excel(skus, file_name="product_codes.xlsx"):
+    # Create a DataFrame with a single column 'stockCode'
+    df = pd.DataFrame(skus, columns=["stockCode"])
+
+    # Write to Excel, overwrite existing file
+    df.to_excel(file_name, index=False)
+
+    print(f"Data written to {file_name}")
+
+def main():
+    brand_id = 38
+    all_skus = get_all_products(brand_id)
+
+    # Write SKUs to Excel file
+    write_to_excel(all_skus)
+
+if __name__ == "__main__":
+    main()
