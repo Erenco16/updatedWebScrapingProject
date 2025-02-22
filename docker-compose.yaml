@@ -1,6 +1,20 @@
 version: "3.9"
 
 services:
+  auth_service:
+    build:
+      context: .
+      dockerfile: Dockerfile.auth
+    container_name: auth_service
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    volumes:
+      - ./src/auth:/app/src/auth
+    command: ["/app/src/input/start.sh"]  # Runs both scripts
+
+
   selenium-hub:
     image: seleniarm/hub:latest
     container_name: selenium-hub
@@ -17,24 +31,31 @@ services:
       - SE_EVENT_BUS_PUBLISH_PORT=4442
       - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
 
+  request_operations:
+    build:
+      context: .
+      dockerfile: Dockerfile.auth  # Uses the same image as auth_service
+    container_name: request_operations
+    depends_on:
+      - auth_service
+    env_file:
+      - .env  # Load environment variables
+    volumes:
+      - ./src/input:/app/src/input
+    command: ["python", "/app/src/auth/request_operations.py"]
+
   webscrape:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: webscrape
     depends_on:
-      - selenium-hub
+      - request_operations
     env_file:
-      - .env  # Load environment variables from .env file
+      - .env  # Load environment variables
     environment:
-      - GRID_URL=http://selenium-hub:4444/wd/hub  # Set fallback GRID_URL
+      - GRID_URL=http://selenium-hub:4444/wd/hub
     volumes:
-      - ./src/input:/src/input  # Ensure the input directory is mounted
-      - ./src/output:/src/output  # If there is an output directory
-      - ./wait-for-it.sh:/wait-for-it.sh  # Mount the wait-for-it script
-    command: ["bash", "/wait-for-it.sh", "selenium-hub", "4444", "--", "python", "main.py"]
-
-
-volumes:
-  input:  # Define the input volume
-  output:  # Define the output volume
+      - ./src/input:/src/input
+      - ./src/output:/src/output
+    command: ["python", "/app/src/main.py"]
