@@ -1,24 +1,24 @@
 FROM python:3.9-slim
 
-# Set working directory inside the container
-WORKDIR /app/src/input
+# Install curl
+RUN apt-get update && apt-get install -y curl
 
-# Install dependencies
-COPY requirements.txt /app/src/auth/
+# Set working directory
+WORKDIR /app
+
+# Copy requirements and install dependencies
+COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy authentication server and request operations scripts
-COPY src/auth/ /app/src/input/
+# Copy all source files
+COPY src/ /app/src/
 
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
+# Copy and set permissions for start script
+COPY src/input/start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
-# Expose Flask's default port
-EXPOSE 5000
+# Expose Flask port
+EXPOSE 5001
 
-# Create a startup script to run both scripts
-COPY start.sh /app/src/input/start.sh
-RUN chmod +x /app/src/input/start.sh
-
-# Run the startup script
-CMD ["/app/src/input/start.sh"]
+# Start the service
+CMD ["sh", "-c", "/app/start.sh && tail -f /dev/null"]
