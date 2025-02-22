@@ -3,7 +3,7 @@ import time
 import json
 import requests
 import secrets
-from flask import Flask, redirect, request, session, url_for
+from flask import Flask, session
 
 app = Flask(__name__)
 app.secret_key = "supersecretkey"
