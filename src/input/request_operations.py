@@ -10,8 +10,8 @@ load_dotenv()
 TOKEN_URL = os.getenv("token_url")
 CLIENT_ID = os.getenv("ideasoft_client_id")
 CLIENT_SECRET = os.getenv("ideasoft_client_secret")
-REDIRECT_URI = "http://127.0.0.1:5001/callback"
-TOKEN_FILE = "token.json"
+REDIRECT_URI = os.getenv("ideasoft_redirect_uri")
+TOKEN_FILE = "/app/src/input/token.json"  # Konteyner içindeki doğru yolu kullan
 
 
 def load_token():
@@ -29,21 +29,8 @@ def save_token(token_data):
         json.dump(token_data, f)
 
 
-def get_auth_code():
-    """Kaydedilen yetkilendirme kodunu döndürür."""
-    token_data = load_token()
-    if token_data and "auth_code" in token_data:
-        return token_data["auth_code"]
-    print("❌ HATA: Yetkilendirme kodu bulunamadı!")
-    return None
-
-
-def exchange_code_for_token():
+def exchange_code_for_token(auth_code):
     """Yetkilendirme kodu ile access token alır."""
-    auth_code = get_auth_code()
-    if not auth_code:
-        return None
-
     response = requests.post(
         TOKEN_URL,
         data={
@@ -114,4 +101,8 @@ def get_access_token():
 
 
 if __name__ == "__main__":
-    exchange_code_for_token()  # Yetkilendirme kodu alınınca çalıştır.
+    token = get_access_token()
+    if token:
+        print(f"✅ Geçerli Access Token: {token}")
+    else:
+        print("❌ Access Token alınamadı.")

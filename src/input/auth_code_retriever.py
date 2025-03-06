@@ -6,7 +6,7 @@ load_dotenv()
 
 CLIENT_ID = os.getenv("ideasoft_client_id")
 CLIENT_SECRET = os.getenv("ideasoft_client_secret")
-REDIRECT_URI = "http://127.0.0.1:5001/callback"
+REDIRECT_URI = os.getenv("ideasoft_redirect_uri")
 AUTH_URL = os.getenv("auth_url")
 TOKEN_URL = os.getenv("token_url")
 
