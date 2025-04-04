@@ -217,6 +217,7 @@ def is_cookie_valid(cookie_file, expiry_time):
     )
 
 def main():
+    send_mail_with_excel("erenbasaran50@gmail.com", OUTPUT_FILE)
     global cookies
     login_thread = threading.Thread(target=refresh_login, daemon=True)
     login_thread.start()
