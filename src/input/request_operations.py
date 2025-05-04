@@ -89,7 +89,7 @@ def get_access_token():
         print("❌ HATA: Token bulunamadı. Yetkilendirmeyi tekrar yapmalısın.")
         return None
 
-    expires_in = int(token_data.get("expires_in", 3600))  # Varsayılan 1 saat
+    expires_in = int(token_data.get("expires_in", 86400))
     expiry_time = token_data["timestamp"] + expires_in
     BUFFER_TIME = 300  # 5 dakika öncesinden yenile
 
