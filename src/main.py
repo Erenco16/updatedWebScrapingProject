@@ -31,7 +31,7 @@ PROXIES = [
 ]
 
 COOKIE_EXPIRY = 600  # 10 minutes
-LOGIN_INTERVAL = 300  # 5 min
+LOGIN_INTERVAL = 480  # 8 min
 
 stop_refreshing = False  # Global flag to stop the login refresh loop
 
@@ -254,7 +254,9 @@ def main():
     if os.path.exists(OUTPUT_FILE):
         os.remove(OUTPUT_FILE)
 
-    output_data = pd.DataFrame(results)
+    output_data = pd.DataFrame(results)\
+    # reversing dataframe to keep the primary keys in the front
+    output_data = output_data[output_data.columns[::-1]]
     output_data.to_excel(OUTPUT_FILE, index=False)
     print(f"✅ Results saved to {OUTPUT_FILE}")
 

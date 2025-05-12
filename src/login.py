@@ -5,100 +5,130 @@ from dotenv import load_dotenv
 import time
 import pickle
 import json
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 load_dotenv()
 
 def handle_login():
-    from selenium.webdriver.chrome.options import Options
-
-    # Initialize Chrome options
+    """Perform login using Selenium and save cookies."""
     options = Options()
-    options.add_argument("--disable-blink-features=AutomationControlled")  # Avoid detection as a bot
-    options.add_argument("--start-maximized")  # Start with a maximized window for consistent behavior
-    options.add_argument("--headless")  # Run in headless mode for grid compatibility
-    options.add_argument("--no-sandbox")  # Disable sandbox for compatibility
-    options.add_argument("--disable-dev-shm-usage")  # Avoid issues with shared memory
-    options.add_argument(f"user-agent={os.getenv('USER_AGENT')}")  # Set custom user agent if provided
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--start-maximized")
+    options.add_argument("--headless")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument(f"user-agent={os.getenv('USER_AGENT', 'Mozilla/5.0')}")
 
-    # Selenium Grid Hub URL
-    selenium_hub_url = os.getenv("GRID_URL", "http://selenium-hub:4444/wd/hub")
+    driver = webdriver.Chrome(options=options)
+    wait = WebDriverWait(driver, 15)
 
-    # Initialize the Remote WebDriver
-    driver = webdriver.Remote(
-        command_executor=selenium_hub_url,
-        options=options
-    )
-
-    # Open the website
     driver.get("https://www.hafele.com.tr/")
-    time.sleep(5)
+    time.sleep(3)
 
-    # Get username and password from environment variables
     username = os.getenv("hafele_username")
     password = os.getenv("hafele_password")
 
-    # Close the initial warning page
     try:
-        element = driver.find_element(By.XPATH,
-                                      "//a[contains(@class, 'a-btn') and contains(@class, 't-btn') and contains(@class, 't-btn-secondary') and contains(@class, 'modal-link')]")
-        driver.execute_script("arguments[0].click();", element)
+        # Step 1: Click the accept button (if it's there)
+        cookie_btn = wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
+        cookie_btn.click()
+
+        # Step 2: Wait for the dark overlay to disappear (invisible or detached from DOM)
+        wait.until(EC.invisibility_of_element_located((By.CLASS_NAME, "onetrust-pc-dark-filter")))
+    except TimeoutException:
+        try:
+            driver.execute_script("""
+                let overlay = document.querySelector('.onetrust-pc-dark-filter');
+                if (overlay) {
+                    overlay.style.display = 'none';
+                    overlay.remove();  // try to fully remove it
+                }
+            """)
+        except Exception as e:
+            print(f"Failed to remove overlay manually: {e}")
     except Exception as e:
-        print(f"Warning page close failed: {e}")
+        print(f"Cookie banner handling failed or not present: {e}")
 
-    # Handle login
-    login_header = driver.find_element(By.ID, "headerLoginLinkAction")
-    login_header.click()
+    # Step 2: Close initial modal if "Stay Here" is visible
+    try:
+        stay_here_btn = wait.until(
+            EC.element_to_be_clickable((
+                By.XPATH,
+                "//a[contains(@class, 'modal-link') and normalize-space(text())='Stay Here']"
+            ))
+        )
+        driver.execute_script("arguments[0].click();", stay_here_btn)
+        time.sleep(1)
+    except Exception as e:
+        print(f"No 'Stay Here' modal found or already handled: {e}")
 
-    username_input = driver.find_element(By.ID, "ShopLoginForm_Login_headerItemLogin")
-    password_input = driver.find_element(By.ID, "ShopLoginForm_Password_headerItemLogin")
+    # Step 3: Click on the login button in header
+    login_header = wait.until(EC.element_to_be_clickable((By.ID, "headerLoginLinkAction")))
+    driver.execute_script("arguments[0].click();", login_header)
+
+    # Step 4: Fill in login form
+    username_input = wait.until(EC.visibility_of_element_located((By.ID, "ShopLoginForm_Login_headerItemLogin")))
+    password_input = wait.until(EC.visibility_of_element_located((By.ID, "ShopLoginForm_Password_headerItemLogin")))
     username_input.send_keys(username)
     password_input.send_keys(password)
 
-    # Keep session open checkbox
+    # Step 5: Click 'Remember Me' checkbox (if found)
     try:
         checkbox = driver.find_element(By.ID, "divShopLoginForm_RememberLogin_headerItemLogin")
         checkbox.click()
+    except Exception:
+        pass
+
+    # Final check for cookie accept button before login click
+    try:
+        final_cookie_btn = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
+        )
+        final_cookie_btn.click()
+        # Wait for overlay to vanish again if needed
+        WebDriverWait(driver, 5).until(
+            EC.invisibility_of_element_located((By.CLASS_NAME, "onetrust-pc-dark-filter"))
+        )
     except Exception as e:
-        print(f"Checkbox click failed: {e}")
+        print("No final cookie prompt appeared.")
 
-    time.sleep(2)
+    # Always try to remove OneTrust overlay, just in case it's still present
+    try:
+        driver.execute_script("""
+            let overlay = document.querySelector('.onetrust-pc-dark-filter');
+            if (overlay) {
+                overlay.style.display = 'none';
+                overlay.style.visibility = 'hidden';
+                overlay.style.pointerEvents = 'none';
+                overlay.remove();
+                console.log('OneTrust overlay force-removed.');
+            }
+        """)
+    except Exception as e:
+        print(f"Overlay removal (final attempt) failed: {e}")
 
-    # Login button click
-    login_btn = driver.find_element(By.XPATH, "//button[@data-testid='ajaxAccountLoginFormBtn']")
+    # Step 6: Submit the login form
+    login_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[@data-testid='ajaxAccountLoginFormBtn']")))
     login_btn.click()
+
     time.sleep(10)
 
-    # Define the absolute paths based on the current file's directory (i.e., the /src folder)
-    base_path = os.path.dirname(__file__)
-    cookie_file_path = os.path.join(base_path, "cookies.pkl")
-    user_agent_file = os.path.join(base_path, "user_agent.txt")
-    session_info_file = os.path.join(base_path, "session_info.json")
+    # Step 7: Save cookies to file
+    with open("cookies.pkl", "wb") as file:
+        pickle.dump(driver.get_cookies(), file)
 
-    # Save cookies after logging in
-    try:
-        with open(cookie_file_path, "wb") as file:
-            print(driver.get_cookies())
-            pickle.dump(driver.get_cookies(), file)
-        # Save the user agent
-        with open(user_agent_file, "w") as file:
-            file.write(options.arguments[-1].split("=")[-1])
-    except Exception as e:
-        print(f"Failed to save cookies: {e}")
-
-    # Save session information from localStorage
+    # Step 8: Save sessionInfoData from localStorage (if exists)
     try:
         session_info = driver.execute_script("return window.localStorage.getItem('sessionInfoData');")
         if session_info:
-            # Parse and save sessionInfoData as JSON
             session_info_json = json.loads(session_info)
-            with open(session_info_file, "w") as file:
+            with open("session_info.json", "w") as file:
                 json.dump(session_info_json, file, indent=4)
-                file.flush()  # Ensure the data is written to disk
-                os.fsync(file.fileno())  # Force the OS to flush the file
-            print(f"Session info saved: {session_info_json}")
-        else:
-            print("No sessionInfoData found in localStorage.")
+            print("Session info saved.")
     except Exception as e:
-        print(f"Failed to save session info: {e}")
+        print(f"Session info not found or failed to save: {e}")
 
     return driver
