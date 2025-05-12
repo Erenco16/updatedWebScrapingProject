@@ -22,7 +22,15 @@ def handle_login():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument(f"user-agent={os.getenv('USER_AGENT', 'Mozilla/5.0')}")
 
-    driver = webdriver.Chrome(options=options)
+    # Selenium Grid Hub URL
+    selenium_hub_url = os.getenv("GRID_URL", "http://selenium-hub:4444/wd/hub")
+
+    # Initialize the Remote WebDriver
+    driver = webdriver.Remote(
+        command_executor=selenium_hub_url,
+        options=options
+    )
+
     wait = WebDriverWait(driver, 15)
 
     driver.get("https://www.hafele.com.tr/")
