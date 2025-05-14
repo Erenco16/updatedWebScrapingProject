@@ -238,8 +238,7 @@ def main():
 
     # Load input product codes
     df = pd.read_excel(INPUT_FILE)
-    # stock_codes = df["stockCode"].tolist()
-    stock_codes = ["001.25.791"]
+    stock_codes = df["stockCode"].tolist()
     base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
     product_urls = [(f"{base_url}?SKU={code.replace('.', '')}&ProductQuantity=20000", code) for code in stock_codes]
 
@@ -271,6 +270,8 @@ def main():
     print(f"\n✅ Results saved to {OUTPUT_FILE}")
     print(f"✅ Scraping complete. Process will exit now.\n")
 
+    send_mail_with_excel(os.getenv("gmail_receiver_email"), OUTPUT_FILE)
+    send_mail_with_excel(os.getenv("gmail_receiver_email_2"), OUTPUT_FILE)
 
 
 if __name__ == "__main__":
