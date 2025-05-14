@@ -9,6 +9,10 @@ from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+
 
 # Load environment variables
 load_dotenv()
@@ -34,74 +38,142 @@ def handle_login():
     options = Options()
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--start-maximized")
-    options.add_argument("--headless")  # Run headless
+    options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument(f"user-agent={os.getenv('USER_AGENT', 'Mozilla/5.0')}")
 
     driver = webdriver.Chrome(options=options)
+    wait = WebDriverWait(driver, 15)
 
     driver.get("https://www.hafele.com.tr/")
-    time.sleep(5)
+    time.sleep(3)
 
     username = os.getenv("hafele_username")
     password = os.getenv("hafele_password")
 
     try:
-        element = driver.find_element(By.XPATH, "//a[contains(@class, 'a-btn') and contains(@class, 'modal-link')]")
-        driver.execute_script("arguments[0].click();", element)
-    except Exception:
-        pass  # If the warning page doesn't appear, continue
+        # Step 1: Click the accept button (if it's there)
+        cookie_btn = wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
+        driver.save_screenshot("onetrust-accept-btn-handler.png")
+        cookie_btn.click()
+        print("Cookie consent accepted.")
 
-    # Handle login
-    login_header = driver.find_element(By.ID, "headerLoginLinkAction")
-    login_header.click()
+        # Step 2: Wait for the dark overlay to disappear (invisible or detached from DOM)
+        wait.until(EC.invisibility_of_element_located((By.CLASS_NAME, "onetrust-pc-dark-filter")))
+        print("Overlay disappeared normally.")
+    except TimeoutException:
+        driver.save_screenshot("not-found.png")
+        print("Timeout waiting for overlay to disappear — trying to force-hide it with JS.")
+        try:
+            driver.execute_script("""
+                let overlay = document.querySelector('.onetrust-pc-dark-filter');
+                if (overlay) {
+                    overlay.style.display = 'none';
+                    overlay.remove();  // try to fully remove it
+                }
+            """)
+            print("Overlay force-hidden with JavaScript.")
+        except Exception as e:
+            print(f"Failed to remove overlay manually: {e}")
+    except Exception as e:
+        print(f"Cookie banner handling failed or not present: {e}")
 
-    username_input = driver.find_element(By.ID, "ShopLoginForm_Login_headerItemLogin")
-    password_input = driver.find_element(By.ID, "ShopLoginForm_Password_headerItemLogin")
+    # Step 2: Close initial modal if "Stay Here" is visible
+    try:
+        stay_here_btn = wait.until(
+            EC.element_to_be_clickable((
+                By.XPATH,
+                "//a[contains(@class, 'modal-link') and normalize-space(text())='Stay Here']"
+            ))
+        )
+        driver.save_screenshot("initialmodel-open.png")
+        driver.execute_script("arguments[0].click();", stay_here_btn)
+        print("Clicked 'Stay Here' on initial modal.")
+        time.sleep(1)
+        driver.save_screenshot("initialmodel-closed.png")
+    except Exception as e:
+        print(f"No 'Stay Here' modal found or already handled: {e}")
+
+    # Step 3: Click on the login button in header
+    login_header = wait.until(EC.element_to_be_clickable((By.ID, "headerLoginLinkAction")))
+    driver.execute_script("arguments[0].click();", login_header)
+
+    # Step 4: Fill in login form
+    username_input = wait.until(EC.visibility_of_element_located((By.ID, "ShopLoginForm_Login_headerItemLogin")))
+    password_input = wait.until(EC.visibility_of_element_located((By.ID, "ShopLoginForm_Password_headerItemLogin")))
     username_input.send_keys(username)
     password_input.send_keys(password)
 
+    # Step 5: Click 'Remember Me' checkbox (if found)
     try:
         checkbox = driver.find_element(By.ID, "divShopLoginForm_RememberLogin_headerItemLogin")
         checkbox.click()
     except Exception:
-        pass  # Ignore checkbox error if not present
+        pass
 
-    time.sleep(2)
+    # Final check for cookie accept button before login click
+    try:
+        final_cookie_btn = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
+        )
+        final_cookie_btn.click()
+        print("Accepted final cookie prompt.")
+        # Wait for overlay to vanish again if needed
+        WebDriverWait(driver, 5).until(
+            EC.invisibility_of_element_located((By.CLASS_NAME, "onetrust-pc-dark-filter"))
+        )
+        print("Overlay cleared again.")
+    except Exception as e:
+        print("No final cookie prompt appeared.")
 
-    login_btn = driver.find_element(By.XPATH, "//button[@data-testid='ajaxAccountLoginFormBtn']")
+    # Always try to remove OneTrust overlay, just in case it's still present
+    try:
+        driver.execute_script("""
+            let overlay = document.querySelector('.onetrust-pc-dark-filter');
+            if (overlay) {
+                overlay.style.display = 'none';
+                overlay.style.visibility = 'hidden';
+                overlay.style.pointerEvents = 'none';
+                overlay.remove();
+                console.log('OneTrust overlay force-removed.');
+            }
+        """)
+        print("Overlay force-hidden before login click.")
+        driver.save_screenshot("overlay-force-hidden.png")
+    except Exception as e:
+        print(f"Overlay removal (final attempt) failed: {e}")
+
+    # Step 6: Submit the login form
+    login_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[@data-testid='ajaxAccountLoginFormBtn']")))
     login_btn.click()
+
     time.sleep(10)
 
-    # Save cookies
-    with open(COOKIE_FILE, "wb") as file:
+    driver.save_screenshot("after-login-click.png")
+
+    # Step 7: Save cookies to file
+    with open("cookies.pkl", "wb") as file:
         pickle.dump(driver.get_cookies(), file)
 
-    # Save session information
+    # Step 8: Save sessionInfoData from localStorage (if exists)
     try:
         session_info = driver.execute_script("return window.localStorage.getItem('sessionInfoData');")
         if session_info:
             session_info_json = json.loads(session_info)
             with open("session_info.json", "w") as file:
                 json.dump(session_info_json, file, indent=4)
-            print(f"Session info saved: {session_info_json}")
-    except Exception:
-        pass  # Ignore session info error if not present
+            print("Session info saved.")
+    except Exception as e:
+        print(f"Session info not found or failed to save: {e}")
 
     driver.quit()
 
 
 def load_cookies():
-    """Load cookies from file or perform login if missing."""
-    if os.path.exists(COOKIE_FILE):
-        with open(COOKIE_FILE, "rb") as file:
-            return pickle.load(file)
-    else:
-        print("No existing cookies found. Logging in...")
-        handle_login()
-        with open(COOKIE_FILE, "rb") as file:
-            return pickle.load(file)
+    handle_login()
+    with open(COOKIE_FILE, "rb") as file:
+        return pickle.load(file)
 
 
 def fetch_product_page(url, cookies):
