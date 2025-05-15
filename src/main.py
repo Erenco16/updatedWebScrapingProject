@@ -8,7 +8,7 @@ import os
 from dotenv import load_dotenv
 from send_mail import send_mail_with_excel
 import random
-from pathlib import Path
+import threading
 
 load_dotenv()
 
@@ -31,7 +31,7 @@ PROXIES = [
 ]
 
 COOKIE_EXPIRY = 600  # 10 minutes
-LOGIN_INTERVAL = 480  # 8 min
+LOGIN_INTERVAL = 300  # 5 min
 
 stop_refreshing = False  # Global flag to stop the login refresh loop
 
