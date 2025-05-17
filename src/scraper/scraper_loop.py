@@ -16,8 +16,7 @@ def wait_for_login():
 
 # Load and sample ONCE
 df_all = pd.read_excel(INPUT_FILE)
-df_sample = df_all.sample(n=100, random_state=42)
-codes_to_scrape = df_sample["stockCode"].astype(str).tolist()
+codes_to_scrape = df_all["stockCode"].astype(str).tolist()
 
 master_df = pd.DataFrame()
 scraped_codes = set()
