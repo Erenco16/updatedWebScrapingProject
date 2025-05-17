@@ -1,14 +1,10 @@
-import login
 import requests
 import pickle
 from bs4 import BeautifulSoup
-import pandas as pd
 import time
 import os
 from dotenv import load_dotenv
-from send_mail import send_mail_with_excel
 import random
-import threading
 
 load_dotenv()
 
@@ -35,29 +31,6 @@ LOGIN_INTERVAL = 300  # 5 min
 
 stop_refreshing = False  # Global flag to stop the login refresh loop
 
-def refresh_login():
-    """Login every 5 minutes to refresh cookies while scraping is running."""
-    global cookies
-    while not stop_refreshing:  # Only run while scraping is active
-        print("\n🔄 Refreshing login and updating cookies...\n")
-        try:
-            driver = login.handle_login()
-            driver.quit()
-            print("✅ Login successful.")
-        except Exception as e:
-            print(f"❌ Login failed: {e}")
-
-        if os.path.exists(COOKIE_FILE):
-            cookies = load_cookies(COOKIE_FILE)
-        else:
-            print("⚠️ Warning: Cookies file not found after login.")
-
-        # Wait 5 minutes before next login refresh
-        for _ in range(LOGIN_INTERVAL // 5):  # Check every 5 seconds if scraping has finished
-            if stop_refreshing:
-                print("🛑 Stopping login refresh thread.")
-                return
-            time.sleep(5)
 
 def retrieve_product_data(url, code, cookie_information, retries=3):
     """Fetch and parse the HTML to extract stock, price, and group product information."""
@@ -215,60 +188,3 @@ def is_cookie_valid(cookie_file, expiry_time):
         os.path.exists(cookie_file)
         and (time.time() - os.path.getmtime(cookie_file)) < expiry_time
     )
-
-def main():
-    send_mail_with_excel("erenbasaran50@gmail.com", OUTPUT_FILE)
-    global cookies
-    login_thread = threading.Thread(target=refresh_login, daemon=True)
-    login_thread.start()
-
-    if os.path.exists(COOKIE_FILE):
-        print("\n✅ Cookies file found. Loading cookies...\n")
-        cookies = load_cookies(COOKIE_FILE)
-    else:
-        print("\n❌ No cookies file found. Logging in to create cookies...\n")
-        driver = login.handle_login()
-        driver.quit()
-        cookies = load_cookies(COOKIE_FILE)
-
-    if cookies is None or not cookies:
-        print("⚠️ Warning: Cookies are empty. Login might have failed!")
-        return
-
-    df = pd.read_excel(INPUT_FILE)
-    stock_codes = df["stockCode"].tolist()
-    base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
-    product_urls = [(f"{base_url}?SKU={code.replace('.', '')}&ProductQuantity=20000", code) for code in stock_codes]
-
-    results = []
-    for url, code in product_urls:
-        try:
-            print(f"Scraping data for stock code {code}...")
-            result = retrieve_product_data(url=url, code=code, cookie_information=cookies)
-            result["stockCode"] = code
-            results.append(result)
-        except Exception as e:
-            print(f"Error processing stock code {code}: {e}")
-            results.append({"stockCode": code, "stok_durumu": f"Error: {e}", "stock_amount": None})
-
-    if os.path.exists(OUTPUT_FILE):
-        os.remove(OUTPUT_FILE)
-
-    output_data = pd.DataFrame(results)
-    output_data.to_excel(OUTPUT_FILE, index=False)
-    print(f"✅ Results saved to {OUTPUT_FILE}")
-
-    email = os.getenv("gmail_receiver_email_2")
-    email_2 = os.getenv("gmail_receiver_email")
-    try:
-        send_mail_with_excel(email, OUTPUT_FILE)
-        send_mail_with_excel(email_2, OUTPUT_FILE)
-        print(f"📧 Email sent to {email} and {email_2}")
-    except Exception as e:
-        print(f"❌ Error sending email: {e}")
-
-    print(f"\n✅ Scraping complete. Process will exit now.\n")
-
-
-if __name__ == "__main__":
-    main()

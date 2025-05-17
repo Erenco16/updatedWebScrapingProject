@@ -21,7 +21,7 @@ load_dotenv()
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
 # Import main functions for testing
-from src.main import (
+from src.scraper.scraping_functions import (
     handle_singular_product,
     retrieve_product_data,
     extract_price_info,
@@ -260,9 +260,6 @@ def main():
 
     # Step 4: Run individual function tests
     print("\n--- Running Function Tests ---")
-    test_handle_singular_product(soup)
-    test_extract_price_info(soup)
-    test_does_product_exist(code=product_code, cookies=cookies)
     test_retrieve_product_data(url=product_url, cookies=cookies, code=product_code)
 
 
