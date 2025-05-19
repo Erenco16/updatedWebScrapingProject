@@ -9,6 +9,10 @@ DONE_FLAG = "/shared/done.flag"
 OUTPUT_FILE = "/src/output/product_data_results.xlsx"
 INPUT_FILE = "/src/input/product_codes.xlsx"
 
+# Ensure old done flag is removed if it exists
+if os.path.exists(DONE_FLAG):
+    os.remove(DONE_FLAG)
+
 def wait_for_login():
     while os.path.exists(LOCK_FILE):
         print("⏳ Waiting for login to finish...")
@@ -21,7 +25,6 @@ codes_to_scrape = df_all["stockCode"].astype(str).tolist()
 master_df = pd.DataFrame()
 scraped_codes = set()
 
-print("🚀 Scraper loop started with 100 random products")
 send_mail_without_excel("erenbasaran50@gmail.com", "Web scraping process started", f"{len(codes_to_scrape)} amount of products are going to be scraped.")
 while True:
     wait_for_login()
