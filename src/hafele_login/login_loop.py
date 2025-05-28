@@ -1,9 +1,9 @@
 import os
 import time
 import pickle
-from login import handle_login
+from handle_login import handle_login
 
-LOCK_FILE = "/shared/login.lock"
+LOCK_FILE = "/shared/hafele_login.lock"
 COOKIE_FILE = "/shared/cookies.pkl"
 DONE_FILE = "/shared/done.flag"
 SLEEP_INTERVAL = 480  # 8 minutes
@@ -16,19 +16,19 @@ def remove_lock():
     if os.path.exists(LOCK_FILE):
         os.remove(LOCK_FILE)
 
-print("🔐 Starting initial login...")
+print("🔐 Starting initial hafele_login...")
 driver = None
 try:
     driver = handle_login()
-    print("✅ Initial login complete.")
+    print("✅ Initial hafele_login complete.")
 except Exception as e:
-    print(f"❌ Failed to start login session: {e}")
+    print(f"❌ Failed to start hafele_login session: {e}")
     exit(1)
 
 # Main refresh loop
 while True:
     if os.path.exists(DONE_FILE):
-        print("✅ Done flag detected. Closing browser and exiting login loop.")
+        print("✅ Done flag detected. Closing browser and exiting hafele_login loop.")
         break
 
     print("🔄 Refreshing cookies...")
