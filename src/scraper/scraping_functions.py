@@ -29,7 +29,7 @@ PROXIES = [
 COOKIE_EXPIRY = 600  # 10 minutes
 LOGIN_INTERVAL = 300  # 5 min
 
-stop_refreshing = False  # Global flag to stop the login refresh loop
+stop_refreshing = False  # Global flag to stop the hafele_login refresh loop
 
 
 def retrieve_product_data(url, code, cookie_information, retries=3):
