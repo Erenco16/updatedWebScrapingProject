@@ -4,7 +4,7 @@ import pandas as pd
 from scraper_main import run_scraper_once
 from send_mail import send_mail_with_excel, send_mail_without_excel
 
-LOCK_FILE = "/shared/login.lock"
+LOCK_FILE = "/shared/hafele_login.lock"
 DONE_FLAG = "/shared/done.flag"
 OUTPUT_FILE = "/src/output/product_data_results.xlsx"
 INPUT_FILE = "/src/input/product_codes.xlsx"
@@ -15,7 +15,7 @@ if os.path.exists(DONE_FLAG):
 
 def wait_for_login():
     while os.path.exists(LOCK_FILE):
-        print("⏳ Waiting for login to finish...")
+        print("⏳ Waiting for hafele_login to finish...")
         time.sleep(10)
 
 # Load and sample ONCE
