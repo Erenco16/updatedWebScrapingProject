@@ -63,7 +63,7 @@ def retrieve_product_data(url, code, cookie_information, retries=3):
         except requests.exceptions.RequestException as e:
             print(f"Request error: {e}. Retrying...")
 
-        time.sleep(2 ** attempt)  # Exponential backoff
+        time.sleep(2 ** attempt + random.uniform(0, 1))
 
     print(f"Failed to fetch data after {retries} retries for URL: {url}")
     return {
