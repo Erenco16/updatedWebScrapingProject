@@ -6,11 +6,12 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
+BASE_DIR = os.path.dirname(__file__)
 TOKEN_URL = os.getenv("token_url")
 CLIENT_ID = os.getenv("ideasoft_client_id")
 CLIENT_SECRET = os.getenv("ideasoft_client_secret")
 REDIRECT_URI = os.getenv("ideasoft_redirect_uri")
-TOKEN_FILE = "/app/src/input/token.json"  # Konteyner içindeki doğru yolu kullan
+TOKEN_FILE = INPUT_FILE = os.path.join(BASE_DIR, "token.json")
 def save_token(token_data):
     """Token bilgisini dosyaya kaydeder."""
     token_data["timestamp"] = time.time()

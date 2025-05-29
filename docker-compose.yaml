@@ -1,5 +1,5 @@
 services:
-  auth_service:
+  flask_service:
     build:
       context: .
       dockerfile: Dockerfile.auth
@@ -24,7 +24,7 @@ services:
         dockerfile: Dockerfile.auth
       container_name: request_operations
       depends_on:
-        auth_service:
+        flask_service:
           condition: service_healthy
       env_file:
         - .env

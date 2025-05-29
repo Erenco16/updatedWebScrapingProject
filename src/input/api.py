@@ -78,8 +78,25 @@ def write_to_excel(skus, file_name="product_codes.xlsx"):
     df.to_excel(file_name, index=False)  # Excel dosyasına yaz
     print(f"✅ SKU'lar {file_name} dosyasına kaydedildi.")
 
+def refresh_token_on_start():
+    """
+    Forces an access token refresh when the script starts.
+    Useful for ensuring the token is valid before any requests are made.
+    """
+    from token_manager import refresh_access_token
+
+    print("🔁 Başlangıçta access token yenileniyor...")
+    new_token = refresh_access_token()
+
+    if not new_token:
+        print("❌ Token yenileme başarısız. Devam edilemiyor.")
+        exit(1)
+    print("✅ Başarılı bir şekilde yenilendi ve kullanılmaya hazır.")
+
+
 # **Marka ID'sini girerek API'den tüm ürünleri çek ve Excel'e yaz!**
 if __name__ == "__main__":
+    refresh_token_on_start()
     brand_id = 38  # İlgili markanın ID'si
     skus = get_all_products(brand_id)
 

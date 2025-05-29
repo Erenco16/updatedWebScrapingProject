@@ -1,77 +1,79 @@
-import json
+import os
 import time
 import requests
-import os
 from dotenv import load_dotenv
 
-# Çevresel değişkenleri yükle
+# Load environment variables from .env file
 load_dotenv()
 
-TOKEN_URL = os.getenv("token_url")
+TOKEN_URL = os.getenv("TOKEN_URL")
 CLIENT_ID = os.getenv("ideasoft_client_id")
 CLIENT_SECRET = os.getenv("ideasoft_client_secret")
-TOKEN_FILE = "/app/src/input/token.json"
 
-
-def load_token():
-    """Token bilgisini JSON dosyasından yükler."""
-    if os.path.exists(TOKEN_FILE):
-        with open(TOKEN_FILE, "r") as f:
-            return json.load(f)
-    return None
-
-
-def save_token(token_data):
-    """Token bilgisini dosyaya kaydeder ve zaman damgası ekler."""
-    token_data["timestamp"] = time.time()
-    with open(TOKEN_FILE, "w") as f:
-        json.dump(token_data, f)
-    print("✅ Token bilgileri güncellendi.")
-
+# Buffer before token expiry (seconds)
+BUFFER_TIME = 300
 
 def get_access_token():
-    """Geçerli bir access token döndürür, gerekirse refresh token ile yeniler."""
-    token_data = load_token()
+    """
+    Returns a valid access token. If the token is near expiration,
+    it refreshes it using the refresh token.
+    """
+    token_timestamp = float(os.getenv("TOKEN_TIMESTAMP", "0"))
+    expires_in = int(os.getenv("EXPIRES_IN", "86400"))
+    expiry_time = token_timestamp + expires_in
 
-    if not token_data:
-        print("❌ HATA: Token bulunamadı! Yeniden yetkilendirme yapmalısın.")
-        return None
-
-    expires_in = int(token_data.get("expires_in", 86400))  # 24 saat
-    expiry_time = token_data["timestamp"] + expires_in
-    BUFFER_TIME = 300  # 5 dakika öncesinden yenile
-
-    # Access Token süresi dolmuşsa yenile
     if time.time() > (expiry_time - BUFFER_TIME):
-        print("🔄 Access token süresi doluyor, refresh token kullanılıyor...")
+        print("🔄 Access token is expiring, attempting to refresh...")
         return refresh_access_token()
 
-    return token_data["access_token"]
-
+    return os.getenv("ACCESS_TOKEN")
 
 def refresh_access_token():
-    """Access Token süresi dolduğunda Refresh Token kullanarak yeni bir token alır."""
-    token_data = load_token()
+    """
+    Uses the refresh token to obtain a new access token.
+    This assumes you will update the .env file manually or via a secure secrets manager.
+    """
+    refresh_token = os.getenv("REFRESH_TOKEN")
 
-    if not token_data or "refresh_token" not in token_data:
-        print("❌ HATA: Refresh token bulunamadı! Yeniden yetkilendirme gerekli.")
+    if not refresh_token:
+        print("❌ ERROR: Refresh token not found. Reauthorization needed.")
         return None
 
-    print("🔄 Refresh token ile yeni Access Token alınıyor...")
+    print("🔄 Requesting new access token using refresh token...")
 
     response = requests.get(
         f"{TOKEN_URL}?grant_type=refresh_token"
         f"&client_id={CLIENT_ID}"
         f"&client_secret={CLIENT_SECRET}"
-        f"&refresh_token={token_data['refresh_token']}"
+        f"&refresh_token={refresh_token}"
     )
+
+    print(f"Sending a request to this url: {response.url}")
+    if response.status_code != 200:
+        print("❌ Token refresh failed:", response.text)
+        return None
 
     new_token_data = response.json()
 
     if "access_token" in new_token_data and "refresh_token" in new_token_data:
-        save_token(new_token_data)
-        print("✅ Yeni Access ve Refresh Token alındı!")
+        print("✅ Token refreshed successfully!")
         return new_token_data["access_token"]
 
-    print("❌ Token yenileme başarısız:", new_token_data)
+    print("❌ Unexpected response format:", new_token_data)
     return None
+
+def load_tokens():
+    """Load token data from environment variables."""
+    return {
+        "access_token": os.getenv("ACCESS_TOKEN"),
+        "refresh_token": os.getenv("REFRESH_TOKEN"),
+        "token_timestamp": os.getenv("TOKEN_TIMESTAMP"),
+        "expires_in": os.getenv("EXPIRES_IN")
+    }
+
+def save_tokens(access_token, refresh_token):
+    """
+    Placeholder for saving tokens securely.
+    Use this if you implement a secure storage solution.
+    """
+    pass
