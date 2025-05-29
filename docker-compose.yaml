@@ -26,7 +26,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.login
-    container_name: login
+    container_name: hafele_login
     depends_on:
       selenium-hub:
         condition: service_healthy
@@ -36,7 +36,7 @@ services:
       - ./shared:/shared
     env_file:
       - .env
-    command: [ "python", "/app/src/login/login_loop.py" ]
+    command: [ "python", "/app/src/hafele_login/login_loop.py" ]
 
   webscrape:
     build:

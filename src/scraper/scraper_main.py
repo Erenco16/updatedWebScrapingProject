@@ -2,11 +2,13 @@ import os
 import pickle
 import pandas as pd
 from dotenv import load_dotenv
-from scraping_functions import retrieve_product_data  # update the path if needed
+from scraping_functions import retrieve_product_data, is_cookie_valid  # update the path if needed
+import time
+
 
 # Load environment variables
 load_dotenv()
-
+LOCK_FILE = "/shared/hafele_login.lock"
 INPUT_FILE = "/src/input/product_codes.xlsx"
 OUTPUT_FILE = "/src/output/product_data_results.xlsx"
 COOKIE_FILE = "/shared/cookies.pkl"
@@ -26,17 +28,22 @@ def get_remaining_product_count():
         return len(remaining)
     return len(df_all)
 
+def wait_for_login():
+    while os.path.exists(LOCK_FILE):
+        print("⏳ Waiting for hafele_login to finish...")
+        time.sleep(10)
+
+
 def run_scraper_once(code):
     """Scrape a single product code and return its row."""
 
     url = f"https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS?SKU={code.replace('.', '')}&ProductQuantity=20000"
 
-    def load_cookies():
-        with open(COOKIE_FILE, "rb") as f:
-            cookies = pickle.load(f)
-        return {cookie["name"]: cookie["value"] for cookie in cookies}
-
     try:
+        if not is_cookie_valid(cookie_file=COOKIE_FILE, expiry_time=600):
+            print("⚠️ Cookie expired. Waiting for login refresh.")
+            wait_for_login()
+
         print(f"🔍 Scraping product {code} ...")
         cookies = load_cookies()
         result = retrieve_product_data(url=url, code=code, cookie_information=cookies)

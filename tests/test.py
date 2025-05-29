@@ -39,7 +39,6 @@ def load_cookies():
 def fetch_product_page(url, cookies):
     session = requests.Session()
     for cookie in cookies:
-        print(f"Cookie: {cookie}")
         session.cookies.set(cookie['name'], cookie['value'])
 
     headers = {"User-Agent": "Mozilla/5.0"}
