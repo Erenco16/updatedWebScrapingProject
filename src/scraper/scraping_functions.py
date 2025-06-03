@@ -45,6 +45,9 @@ def retrieve_product_data(url, code, cookie_information, retries=3):
 
             response = requests.get(url, headers=headers, cookies=cookie_information, timeout=60)
 
+            with open(f"/tmp/response_dump_{code.replace('.', '_')}.html", "w", encoding="utf-8") as f:
+                print(f"Response: {response.text}")
+
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
                 if does_product_exist(code=code, cookies=cookie_information):
@@ -63,7 +66,7 @@ def retrieve_product_data(url, code, cookie_information, retries=3):
         except requests.exceptions.RequestException as e:
             print(f"Request error: {e}. Retrying...")
 
-        time.sleep(2 ** attempt + random.uniform(0, 1))
+        time.sleep(2 ** attempt)  # Exponential backoff
 
     print(f"Failed to fetch data after {retries} retries for URL: {url}")
     return {
@@ -174,17 +177,38 @@ def extract_price_info(soup):
 
 def get_random_headers():
     return {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept-Language": "en-US,en;q=0.9",
-    }
-
-def load_cookies(cookie_file):
-    with open(cookie_file, "rb") as file:
-        cookies = pickle.load(file)
-    return {cookie['name']: cookie['value'] for cookie in cookies}
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Language": "en-GB,en;q=0.9,tr;q=0.5",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Sec-Ch-Ua": '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"macOS"'
+}
 
 def is_cookie_valid(cookie_file, expiry_time):
     return (
         os.path.exists(cookie_file)
         and (time.time() - os.path.getmtime(cookie_file)) < expiry_time
     )
+
+def fetch_product_page(url, cookies):
+    session = requests.Session()
+    for cookie in cookies:
+        session.cookies.set(cookie['name'], cookie['value'])
+
+    headers = {"User-Agent": "Mozilla/5.0"}
+    response = session.get(url, headers=headers, timeout=30)
+
+    if response.status_code == 200:
+        return response.text
+    else:
+        print(f"❌ Failed to fetch product page. Status: {response.status_code}")
+        return None
