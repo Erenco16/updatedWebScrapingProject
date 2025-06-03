@@ -23,8 +23,8 @@ def handle_login():
     options.add_argument(f"user-agent={os.getenv('USER_AGENT', 'Mozilla/5.0')}")
 
     # Selenium Grid Hub URL
-    selenium_hub_url = os.getenv("GRID_URL", "http://selenium-hub:4444/wd/hub")
-
+    selenium_hub_url = os.getenv("GRID_URL", "http://selenium:4444/wd/hub")
+    print(f"🌐 Using Selenium hub at: {selenium_hub_url}")
     # Initialize the Remote WebDriver
     driver = webdriver.Remote(
         command_executor=selenium_hub_url,
