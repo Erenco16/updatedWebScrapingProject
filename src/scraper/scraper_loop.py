@@ -19,16 +19,19 @@ if os.path.exists(DONE_FLAG):
 
 # Load product codes
 df_all = pd.read_excel(INPUT_FILE)
-codes_to_scrape = df_all["stockCode"].astype(str).tolist()
+# codes_to_scrape = df_all["stockCode"].astype(str).tolist()
+codes_to_scrape = [
+    "803.30.500"
+]
 
 master_df = pd.DataFrame()
 scraped_codes = set()
 
-send_mail_without_excel(
-    "erenbasaran50@gmail.com",
-    "Web scraping process started",
-    f"{len(codes_to_scrape)} products will be scraped."
-)
+# send_mail_without_excel(
+#     "erenbasaran50@gmail.com",
+#     "Web scraping process started",
+#     f"{len(codes_to_scrape)} products will be scraped."
+# )
 
 while True:
     remaining_codes = [code for code in codes_to_scrape if code not in scraped_codes and retry_dict.get(code, 0) < MAX_RETRIES]
@@ -36,7 +39,7 @@ while True:
     if not remaining_codes:
         print("✅ All products processed. Writing final file.")
         master_df.to_excel(OUTPUT_FILE, index=False)
-        send_mail_with_excel("erenbasaran50@gmail.com", OUTPUT_FILE)
+        # send_mail_with_excel("erenbasaran50@gmail.com", OUTPUT_FILE)
 
         if failed_codes:
             failed_log = "/src/output/failed_codes.txt"

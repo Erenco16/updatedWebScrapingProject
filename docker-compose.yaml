@@ -1,7 +1,8 @@
 services:
-  selenium-hub:
-    image: seleniarm/hub:latest
-    container_name: selenium-hub
+  selenium:
+    image: seleniarm/standalone-chromium:latest
+    container_name: selenium
+    shm_size: 2gb
     ports:
       - "4444:4444"
     healthcheck:
@@ -10,17 +11,8 @@ services:
       timeout: 10s
       retries: 5
       start_period: 15s
-
-  chrome:
-    image: seleniarm/node-chromium:latest
-    container_name: selenium-node-chrome
-    depends_on:
-      selenium-hub:
-        condition: service_healthy
-    environment:
-      - SE_EVENT_BUS_HOST=selenium-hub
-      - SE_EVENT_BUS_PUBLISH_PORT=4442
-      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+    env_file:
+      - .env
 
   login:
     build:
@@ -28,10 +20,8 @@ services:
       dockerfile: Dockerfile.login
     container_name: hafele_login
     depends_on:
-      selenium-hub:
+      selenium:
         condition: service_healthy
-      chrome:
-        condition: service_started
     volumes:
       - ./shared:/shared
     env_file:
@@ -47,9 +37,12 @@ services:
       login:
         condition: service_started
     volumes:
-      - ./shared:/shared
-      - ./src/input:/src/input
-      - ./src/output:/src/output
+      - ./shared:/app/shared
+      - ./src:/app/src
+      - ./src/input:/app/src/input
+      - ./src/output:/app/src/output
     env_file:
       - .env
-    command: [ "python", "/app/src/scraper/scraper_loop.py" ]
+    environment:
+      - PYTHONPATH=/app/src
+    command: [ "python", "/app/src/core/main.py" ]
