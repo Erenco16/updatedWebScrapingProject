@@ -52,6 +52,7 @@ while True:
 if driver:
     try:
         driver.quit()
+        os.remove(COOKIE_FILE)
         print("🧼 Selenium driver quit cleanly.")
     except Exception as e:
         print(f"⚠️ Could not quit driver (likely already closed): {e}")
