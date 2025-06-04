@@ -103,7 +103,7 @@ def main():
     codes = df_input.iloc[:, 0].dropna().astype(str).tolist()
 
     print(f"🔁 Scraping {len(codes)} products...")
-    send_mail_without_excel("erenbasaran50@gmail.com")
+    send_mail_without_excel("erenbasaran50@gmail.com", content=f"{len(codes)} urunun web kazima islemi baslatildi.")
 
     rows = []
     for i, code in enumerate(codes, 1):
