@@ -6,7 +6,7 @@ services:
     ports:
       - "4444:4444"
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:4444/status" ]
+      test: [ "CMD", "curl", "-f", "http://selenium:4444/status" ]
       interval: 5s
       timeout: 10s
       retries: 5
@@ -14,30 +14,15 @@ services:
     env_file:
       - .env
 
-  login:
-    build:
-      context: .
-      dockerfile: Dockerfile.login
-    container_name: hafele_login
-    depends_on:
-      selenium:
-        condition: service_healthy
-    volumes:
-      - ./shared:/shared
-    env_file:
-      - .env
-    command: [ "python", "/app/src/hafele_login/login_loop.py" ]
-
   webscrape:
     build:
       context: .
       dockerfile: Dockerfile.scraper
     container_name: webscrape
     depends_on:
-      login:
-        condition: service_started
+      selenium:
+        condition: service_healthy
     volumes:
-      - ./shared:/app/shared
       - ./src:/app/src
       - ./src/input:/app/src/input
       - ./src/output:/app/src/output
