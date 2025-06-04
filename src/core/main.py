@@ -36,7 +36,7 @@ def wait_for_initial_cookies():
 def wait_if_locked():
     while os.path.exists(LOCK_FILE):
         print("🔒 Login in progress, waiting...")
-        time.sleep(60)
+        time.sleep(120)
 
 
 def load_cookies():
