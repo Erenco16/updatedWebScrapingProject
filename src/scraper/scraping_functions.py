@@ -45,9 +45,6 @@ def retrieve_product_data(url, code, cookie_information, retries=3):
 
             response = requests.get(url, headers=headers, cookies=cookie_information, timeout=60)
 
-            with open(f"/tmp/response_dump_{code.replace('.', '_')}.html", "w", encoding="utf-8") as f:
-                print(f"Response: {response.text}")
-
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
                 if does_product_exist(code=code, cookies=cookie_information):
