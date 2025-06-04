@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-def send_mail_without_excel(recipient_email,subject= "Hafele Guncel Stoklar", content= r"Guncel stoklari iceren .xlsx dosyasini ekte bulabilirsiniz."):
+def send_mail_without_excel(recipient_email,subject= "Hafele Guncel Stoklar", content= r"Web kazima islemi baslatildi"):
 
     sender_email = os.getenv("gmail_sender_email")
     app_password = os.getenv("gmail_app_password")
@@ -50,7 +50,3 @@ def send_mail_with_excel(recipient_email, excel_file):
         smtp.login(sender_email, app_password)
         smtp.send_message(msg)
         print("Done!")
-
-
-if __name__ == "__main__":
-    send_mail_with_excel("ercan@evan.com.tr")
