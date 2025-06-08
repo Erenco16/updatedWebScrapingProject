@@ -13,7 +13,7 @@ from selenium.common.exceptions import TimeoutException
 load_dotenv()
 
 def handle_login():
-    """Perform login using Selenium and save cookies."""
+    """Perform hafele_login using Selenium and save cookies."""
     options = Options()
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_argument("--start-maximized")
@@ -23,8 +23,8 @@ def handle_login():
     options.add_argument(f"user-agent={os.getenv('USER_AGENT', 'Mozilla/5.0')}")
 
     # Selenium Grid Hub URL
-    selenium_hub_url = os.getenv("GRID_URL", "http://selenium-hub:4444/wd/hub")
-
+    selenium_hub_url = os.getenv("GRID_URL", "http://selenium:4444/wd/hub")
+    print(f"🌐 Using Selenium hub at: {selenium_hub_url}")
     # Initialize the Remote WebDriver
     driver = webdriver.Remote(
         command_executor=selenium_hub_url,
@@ -73,11 +73,11 @@ def handle_login():
     except Exception as e:
         print(f"No 'Stay Here' modal found or already handled: {e}")
 
-    # Step 3: Click on the login button in header
+    # Step 3: Click on the hafele_login button in header
     login_header = wait.until(EC.element_to_be_clickable((By.ID, "headerLoginLinkAction")))
     driver.execute_script("arguments[0].click();", login_header)
 
-    # Step 4: Fill in login form
+    # Step 4: Fill in hafele_login form
     username_input = wait.until(EC.visibility_of_element_located((By.ID, "ShopLoginForm_Login_headerItemLogin")))
     password_input = wait.until(EC.visibility_of_element_located((By.ID, "ShopLoginForm_Password_headerItemLogin")))
     username_input.send_keys(username)
@@ -90,7 +90,7 @@ def handle_login():
     except Exception:
         pass
 
-    # Final check for cookie accept button before login click
+    # Final check for cookie accept button before hafele_login click
     try:
         final_cookie_btn = WebDriverWait(driver, 5).until(
             EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
@@ -118,7 +118,7 @@ def handle_login():
     except Exception as e:
         print(f"Overlay removal (final attempt) failed: {e}")
 
-    # Step 6: Submit the login form
+    # Step 6: Submit the hafele_login form
     login_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[@data-testid='ajaxAccountLoginFormBtn']")))
     login_btn.click()
 
