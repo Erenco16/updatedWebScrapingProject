@@ -92,31 +92,39 @@ def process_product(code):
 
 
 def main():
-    st = time.time()
-    load_initial_cookies()
+    informal_mail = os.getenv("gmail_receiver_email_3")
+    try:
+        st = time.time()
+        load_initial_cookies()
 
-    # Start background thread for refreshing cookies
-    threading.Thread(target=refresh_cookies, daemon=True).start()
+        # Start background thread for refreshing cookies
+        threading.Thread(target=refresh_cookies, daemon=True).start()
 
-    print(f"📥 Reading product codes from {INPUT_FILE}")
-    df_input = pd.read_excel(INPUT_FILE)
-    codes = df_input.iloc[:, 0].dropna().astype(str).tolist()
+        print(f"📥 Reading product codes from {INPUT_FILE}")
+        df_input = pd.read_excel(INPUT_FILE)
+        codes = df_input.iloc[:, 0].dropna().astype(str).tolist()
 
-    print(f"🔁 Scraping {len(codes)} products...")
-    send_mail_without_excel("erenbasaran50@gmail.com", content=f"{len(codes)} urunun web kazima islemi baslatildi.")
+        print(f"🔁 Scraping {len(codes)} products...")
+        send_mail_without_excel("erenbasaran50@gmail.com", content=f"{len(codes)} urunun web kazima islemi baslatildi.")
 
-    rows = []
-    for i, code in enumerate(codes, 1):
-        print(f"\n➡️ [{i}/{len(codes)}] Processing: {code}")
-        row = process_product(code)
-        rows.append(row)
+        rows = []
+        for i, code in enumerate(codes, 1):
+            print(f"\n➡️ [{i}/{len(codes)}] Processing: {code}")
+            row = process_product(code)
+            rows.append(row)
 
-    df_out = pd.DataFrame(rows)
-    df_out.to_excel(OUTPUT_FILE, index=False)
-    print(f"\n✅ Done. Saved results to {OUTPUT_FILE}")
-    send_mail_with_excel("erenbasaran50@gmail.com", OUTPUT_FILE)
-    et = time.time()
-    print(f"Time took to scrape {len(codes)} products: {round((et - st)/60, 2)} minutes.")
+        df_out = pd.DataFrame(rows)
+        df_out.to_excel(OUTPUT_FILE, index=False)
+        print(f"\n✅ Done. Saved results to {OUTPUT_FILE}")
+        send_mail_with_excel(os.getenv("gmail_receiver_email"), OUTPUT_FILE)
+        send_mail_with_excel(os.getenv("gmail_receiver_email_2"), OUTPUT_FILE)
+        send_mail_without_excel(informal_mail, content=f"{len(codes)} urunun web kazima islemi basariyla tamamlandi.")
+        et = time.time()
+        print(f"Time took to scrape {len(codes)} products: {round((et - st)/60, 2)} minutes.")
+
+    except Exception as e:
+        send_mail_without_excel(informal_mail,
+                                content=f"Web kazima islemi hata verdi. Hicbir urunun verisi edinelemedi. Hata: {e}")
 
 if __name__ == "__main__":
     main()
