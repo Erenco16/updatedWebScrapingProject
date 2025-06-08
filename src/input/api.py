@@ -2,6 +2,7 @@ import requests
 from token_manager import get_access_token
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from token_manager import refresh_access_token
 
 
 def get_total_pages(brand_id, access_token):
@@ -83,7 +84,6 @@ def refresh_token_on_start():
     Forces an access token refresh when the script starts.
     Useful for ensuring the token is valid before any requests are made.
     """
-    from token_manager import refresh_access_token
 
     print("🔁 Başlangıçta access token yenileniyor...")
     new_token = refresh_access_token()
