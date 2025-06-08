@@ -101,6 +101,7 @@ def process_product(code):
 
 
 def main():
+    informal_mail = os.getenv("gmail_receiver_email_3")
     try:
         st = time.time()
         load_initial_cookies()
@@ -112,7 +113,7 @@ def main():
         df_input = pd.read_excel(INPUT_FILE)
         codes = df_input.iloc[:, 0].dropna().astype(str).tolist()
         print(f"🔁 Scraping {len(codes)} products...")
-        informal_mail = os.getenv("gmail_receiver_email_3")
+        
         send_mail_without_excel(informal_mail, content=f"{len(codes)} urunun web kazima islemi baslatildi.")
 
         rows = []
