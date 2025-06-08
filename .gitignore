@@ -161,7 +161,7 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-/src/tests/cookies.pkl
-/src/tests/session_info.json
-/src/tests/user_agent.txt
-/src/input/token.json
+/tests/cookies.pkl
+/tests/session_info.json
+/tests/user_agent.txt
+/input/token.json
