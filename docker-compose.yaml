@@ -1,42 +1,33 @@
 services:
-  selenium-hub:
-    image: seleniarm/hub:latest
-    container_name: selenium-hub
+  selenium:
+    image: seleniarm/standalone-chromium:latest
+    container_name: selenium
+    shm_size: 2gb
     ports:
       - "4444:4444"
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:4444/status" ]
+      test: [ "CMD", "curl", "-f", "http://selenium:4444/status" ]
       interval: 5s
       timeout: 10s
       retries: 5
       start_period: 15s
-
-  chrome:
-      image: seleniarm/node-chromium:latest
-      container_name: selenium-node-chrome
-      depends_on:
-        selenium-hub:
-          condition: service_healthy
-      environment:
-        - SE_EVENT_BUS_HOST=selenium-hub
-        - SE_EVENT_BUS_PUBLISH_PORT=4442
-        - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+    env_file:
+      - .env
 
   webscrape:
-      build:
-        context: .
-        dockerfile: Dockerfile
-      container_name: webscrape
-      depends_on:
-        selenium-hub:
-          condition: service_healthy
-        chrome:
-          condition: service_started
-      env_file:
-        - .env
-      environment:
-        - GRID_URL=http://selenium-hub:4444/wd/hub
-      volumes:
-        - ./src/input:/src/input
-        - ./src/output:/src/output
-      command: [ "python", "/app/src/main.py" ]
+    build:
+      context: .
+      dockerfile: Dockerfile.scraper
+    container_name: webscrape
+    depends_on:
+      selenium:
+        condition: service_healthy
+    volumes:
+      - ./src:/app/src
+      - ./src/input:/app/src/input
+      - ./src/output:/app/src/output
+    env_file:
+      - .env
+    environment:
+      - PYTHONPATH=/app/src
+    command: [ "python", "/app/src/core/main.py" ]
