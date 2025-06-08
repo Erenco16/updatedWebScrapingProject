@@ -1,14 +1,9 @@
-import login
 import requests
-import pickle
 from bs4 import BeautifulSoup
 import pandas as pd
 import time
 import os
 from dotenv import load_dotenv
-from send_mail import send_mail_with_excel
-import random
-import threading
 
 load_dotenv()
 
@@ -37,13 +32,12 @@ stop_refreshing = False  # Global flag to stop the hafele_login refresh loop
 
 
 def retrieve_product_data(url, code, cookie_information, retries=3):
-    """Fetch and parse the HTML to extract stock, price, and group product information."""
+    """Fetch and parse the HTML to extract stock, price, group info, and min. purchase quantity."""
     for attempt in range(retries):
         try:
             headers = get_random_headers()
             print(f"Requesting URL: {url}")
 
-            # Convert cookies list to dictionary if necessary
             if isinstance(cookie_information, list):
                 cookie_information = {cookie['name']: cookie['value'] for cookie in cookie_information}
 
@@ -51,9 +45,20 @@ def retrieve_product_data(url, code, cookie_information, retries=3):
 
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
-                if does_product_exist(code=code, cookies=cookie_information):
+                exists, search_soup = does_product_exist(code=code, cookies=cookie_information)
+
+                if exists:
+                    # 🔍 Find the min quantity input
+                    input_tag = search_soup.find("input", {"data-testid": "PDSQuantity"})
+                    min_quantity = input_tag["value"].strip() if input_tag and input_tag.has_attr("value") else None
+
                     group_table = soup.find("tr", id="productBomArticlesInformation")
-                    return handle_group_product(soup, cookie_information) if group_table else handle_singular_product(soup)
+                    result = handle_group_product(soup, cookie_information) if group_table else handle_singular_product(soup)
+
+                    # ✅ Append the new field to the result
+                    result["minimum_alis_fiyati"] = min_quantity
+                    return result
+
                 else:
                     return {
                         "kdv_haric_tavsiye_edilen_perakende_fiyat": "urun hafele.com.tr de bulunmuyor",
@@ -61,6 +66,7 @@ def retrieve_product_data(url, code, cookie_information, retries=3):
                         "kdv_haric_satis_fiyati": "urun hafele.com.tr de bulunmuyor",
                         "stok_durumu": "urun hafele.com.tr de bulunmuyor",
                         "stock_amount": "urun hafele.com.tr de bulunmuyor",
+                        "minimum_alis_fiyati": None,
                     }
             else:
                 print(f"Request failed with status {response.status_code}. Retrying...")
@@ -76,7 +82,9 @@ def retrieve_product_data(url, code, cookie_information, retries=3):
         "kdv_haric_satis_fiyati": None,
         "stok_durumu": None,
         "stock_amount": None,
+        "minimum_alis_fiyati": None,
     }
+
 
 def does_product_exist(code, cookies):
     print(f"Checking existence of product {code}...")
@@ -84,6 +92,7 @@ def does_product_exist(code, cookies):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
+
     if isinstance(cookies, list):
         cookies = {cookie["name"]: cookie["value"] for cookie in cookies}
 
@@ -95,8 +104,10 @@ def does_product_exist(code, cookies):
     soup = BeautifulSoup(response.text, "html.parser")
     error_message = soup.find("p", class_="headlineStyle4")
     if error_message and f"{code} için aramanız başarısız oldu." in error_message.text:
-        return False
-    return True
+        return False, soup
+
+    return True, soup
+
 
 def handle_singular_product(soup):
     price_info = extract_price_info(soup)
@@ -169,12 +180,12 @@ def retrieve_singular_stock(url, cookies):
 
 def extract_price_info(soup):
     prices = soup.select("span.price")
-    units = soup.select("span.perUnit")
     return {
-        "kdv_haric_tavsiye_edilen_perakende_fiyat": prices[2].text.strip() if len(prices) > 2 else None,
-        "kdv_haric_net_fiyat": prices[0].text.strip() if len(prices) > 0 else None,
-        "kdv_haric_satis_fiyati": prices[1].text.strip() if len(prices) > 1 else None,
+        "kdv_haric_tavsiye_edilen_perakende_fiyat": prices[2].text.replace("TL", "").strip() if len(prices) > 2 else None,
+        "kdv_haric_net_fiyat": prices[0].text.replace("TL", "").strip() if len(prices) > 0 else None,
+        "kdv_haric_satis_fiyati": prices[1].text.replace("TL", "").strip() if len(prices) > 1 else None,
     }
+
 
 def get_random_headers():
     return {
@@ -199,17 +210,3 @@ def is_cookie_valid(cookie_file, expiry_time):
         os.path.exists(cookie_file)
         and (time.time() - os.path.getmtime(cookie_file)) < expiry_time
     )
-
-def fetch_product_page(url, cookies):
-    session = requests.Session()
-    for cookie in cookies:
-        session.cookies.set(cookie['name'], cookie['value'])
-
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = session.get(url, headers=headers, timeout=30)
-
-    if response.status_code == 200:
-        return response.text
-    else:
-        print(f"❌ Failed to fetch product page. Status: {response.status_code}")
-        return None
