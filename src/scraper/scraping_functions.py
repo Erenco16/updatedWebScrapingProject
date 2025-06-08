@@ -33,31 +33,8 @@ PROXIES = [
 COOKIE_EXPIRY = 600  # 10 minutes
 LOGIN_INTERVAL = 300  # 5 min
 
-stop_refreshing = False  # Global flag to stop the login refresh loop
+stop_refreshing = False  # Global flag to stop the hafele_login refresh loop
 
-def refresh_login():
-    """Login every 5 minutes to refresh cookies while scraping is running."""
-    global cookies
-    while not stop_refreshing:  # Only run while scraping is active
-        print("\n🔄 Refreshing login and updating cookies...\n")
-        try:
-            driver = login.handle_login()
-            driver.quit()
-            print("✅ Login successful.")
-        except Exception as e:
-            print(f"❌ Login failed: {e}")
-
-        if os.path.exists(COOKIE_FILE):
-            cookies = load_cookies(COOKIE_FILE)
-        else:
-            print("⚠️ Warning: Cookies file not found after login.")
-
-        # Wait 5 minutes before next login refresh
-        for _ in range(LOGIN_INTERVAL // 5):  # Check every 5 seconds if scraping has finished
-            if stop_refreshing:
-                print("🛑 Stopping login refresh thread.")
-                return
-            time.sleep(5)
 
 def retrieve_product_data(url, code, cookie_information, retries=3):
     """Fetch and parse the HTML to extract stock, price, and group product information."""
@@ -201,14 +178,21 @@ def extract_price_info(soup):
 
 def get_random_headers():
     return {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept-Language": "en-US,en;q=0.9",
-    }
-
-def load_cookies(cookie_file):
-    with open(cookie_file, "rb") as file:
-        cookies = pickle.load(file)
-    return {cookie['name']: cookie['value'] for cookie in cookies}
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Language": "en-GB,en;q=0.9,tr;q=0.5",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Sec-Ch-Ua": '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"macOS"'
+}
 
 def is_cookie_valid(cookie_file, expiry_time):
     return (
@@ -216,58 +200,16 @@ def is_cookie_valid(cookie_file, expiry_time):
         and (time.time() - os.path.getmtime(cookie_file)) < expiry_time
     )
 
-def main():
-    global cookies
-    send_mail_with_excel("erenbasaran50@gmail.com", INPUT_FILE)
-    login_thread = threading.Thread(target=refresh_login, daemon=True)
-    login_thread.start()
+def fetch_product_page(url, cookies):
+    session = requests.Session()
+    for cookie in cookies:
+        session.cookies.set(cookie['name'], cookie['value'])
 
-    if os.path.exists(COOKIE_FILE):
-        print("\n✅ Cookies file found. Loading cookies...\n")
-        cookies = load_cookies(COOKIE_FILE)
+    headers = {"User-Agent": "Mozilla/5.0"}
+    response = session.get(url, headers=headers, timeout=30)
+
+    if response.status_code == 200:
+        return response.text
     else:
-        print("\n❌ No cookies file found. Logging in to create cookies...\n")
-        driver = login.handle_login()
-        driver.quit()
-        cookies = load_cookies(COOKIE_FILE)
-
-    if cookies is None or not cookies:
-        print("⚠️ Warning: Cookies are empty. Login might have failed!")
-        return
-
-    df = pd.read_excel(INPUT_FILE)
-    stock_codes = df["stockCode"].tolist()
-    base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
-    product_urls = [(f"{base_url}?SKU={code.replace('.', '')}&ProductQuantity=20000", code) for code in stock_codes]
-
-    results = []
-    for url, code in product_urls:
-        try:
-            print(f"Scraping data for stock code {code}...")
-            result = retrieve_product_data(url=url, code=code, cookie_information=cookies)
-            result["stockCode"] = code
-            results.append(result)
-        except Exception as e:
-            print(f"Error processing stock code {code}: {e}")
-            results.append({"stockCode": code, "stok_durumu": f"Error: {e}", "stock_amount": None})
-
-    if os.path.exists(OUTPUT_FILE):
-        os.remove(OUTPUT_FILE)
-
-    output_data = pd.DataFrame(results)
-    output_data.to_excel(OUTPUT_FILE, index=False)
-    print(f"✅ Results saved to {OUTPUT_FILE}")
-
-    email = os.getenv("gmail_receiver_email_2")
-    email_2 = os.getenv("gmail_receiver_email")
-    try:
-        send_mail_with_excel(email, OUTPUT_FILE)
-        send_mail_with_excel(email_2, OUTPUT_FILE)
-        print(f"📧 Email sent to {email} and {email_2}")
-    except Exception as e:
-        print(f"❌ Error sending email: {e}")
-
-    print(f"\n✅ Scraping complete. Process will exit now.\n")
-
-if __name__ == "__main__":
-    main()
+        print(f"❌ Failed to fetch product page. Status: {response.status_code}")
+        return None
