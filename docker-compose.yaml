@@ -75,6 +75,7 @@ services:
       environment:
         - GRID_URL=http://selenium:4444/wd/hub
       volumes:
-        - ./src/input:/src/input
-        - ./src/output:/src/output
+        - ./src/input:/app/input
+        - ./src/shared:/app/shared
+        - ./src/output:/app/output
       command: [ "python", "/app/src/core/main.py" ]

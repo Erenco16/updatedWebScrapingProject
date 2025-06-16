@@ -1,107 +1,72 @@
 import os
 import sys
 import pickle
-import requests
-from bs4 import BeautifulSoup
-from dotenv import load_dotenv
+import pytest
+from unittest.mock import patch, MagicMock
 
-# Add src directory to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
+# Add src to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
 
-# Load environment variables
-load_dotenv()
-os.environ["GRID_URL"] = "http://localhost:4444/wd/hub"
-
-# Import functions from your actual modules
-from src.scraper.scraping_functions import (
-    retrieve_product_data,
-    extract_price_info,
-    handle_singular_product,
-    does_product_exist
+from core.main import (
+    load_initial_cookies,
+    process_product,
+    get_cookie_snapshot,
+    parse_price,
 )
 
-from src.hafele_login import handle_login as hafele_login
-COOKIE_FILE = "cookies.pkl"
-BASE_PRODUCT_URL = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
+from scraper.scraping_functions import does_product_exist
 
+# ---------- FIXTURES ----------
 
-def load_cookies():
-    driver = hafele_login.handle_login()
-    cookies = driver.get_cookies()
-    driver.quit()
+@pytest.fixture(scope="module")
+def sample_cookies():
+    return [{'name': 'session', 'value': 'abc', 'domain': 'www.hafele.com.tr'}]
 
-    with open(COOKIE_FILE, "wb") as file:
-        pickle.dump(cookies, file)
+@pytest.fixture(scope="module")
+def sample_product_code():
+    return "959.00.125"
 
-    return cookies
+# ---------- TESTS ----------
 
-
-def fetch_product_page(url, cookies):
-    session = requests.Session()
-    for cookie in cookies:
-        session.cookies.set(cookie['name'], cookie['value'])
-
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = session.get(url, headers=headers, timeout=30)
-
-    if response.status_code == 200:
-        return response.text
-    else:
-        print(f"❌ Failed to fetch product page. Status: {response.status_code}")
-        return None
-
-
-def test_all_functions(product_code, cookies):
-    print(f"\n🔍 Testing code: {product_code}")
-
-    # Construct product data URL
-    url = f"{BASE_PRODUCT_URL}?SKU={product_code.replace('.', '')}&ProductQuantity=20000"
-
-    # Test retrieve_product_data
+def test_parse_price_runs():
     try:
-        data = retrieve_product_data(url=url, code=product_code, cookie_information=cookies)
-        print("✅ retrieve_product_data:", data)
+        parse_price("1.234,56")
+        parse_price(None)
     except Exception as e:
-        print("❌ retrieve_product_data error:", e)
+        pytest.fail(f"parse_price raised an exception: {e}")
 
-    # Fetch page HTML
-    html = fetch_product_page(url, cookies)
-    if not html:
-        return
+@patch("core.main.handle_login")
+def test_load_initial_cookies_runs(mock_login):
+    mock_driver = MagicMock()
+    mock_driver.get_cookies.return_value = [{"name": "session", "value": "xyz"}]
+    mock_login.return_value = mock_driver
 
-    soup = BeautifulSoup(html, "html.parser")
-
-    # Test handle_singular_product
     try:
-        result = handle_singular_product(soup)
-        print("✅ handle_singular_product:", result)
+        load_initial_cookies()
     except Exception as e:
-        print("❌ handle_singular_product error:", e)
+        pytest.fail(f"load_initial_cookies raised an exception: {e}")
 
-    # Test extract_price_info
+def test_get_cookie_snapshot_runs(sample_cookies):
+    with patch("core.main.cookies", sample_cookies):
+        try:
+            snapshot = get_cookie_snapshot()
+            assert snapshot is not None
+        except Exception as e:
+            pytest.fail(f"get_cookie_snapshot raised an exception: {e}")
+
+@patch("core.main.retrieve_product_data")
+def test_does_product_exist_runs_and_returns_boolean(sample_product_code, sample_cookies):
     try:
-        price = extract_price_info(soup)
-        print("✅ extract_price_info:", price)
+        result = does_product_exist(sample_product_code, sample_cookies)
+        assert isinstance(result, (bool, tuple))
+        if isinstance(result, tuple):
+            assert isinstance(result[0], bool)
     except Exception as e:
-        print("❌ extract_price_info error:", e)
+        pytest.fail(f"does_product_exist raised an exception: {e}")
 
-    # Test does_product_exist
+
     try:
-        exists = does_product_exist(product_code, cookies)
-        print("✅ does_product_exist:", exists)
+        result = process_product(sample_product_code, sample_cookies)
+        assert result is not None
     except Exception as e:
-        print("❌ does_product_exist error:", e)
-
-
-def main():
-    cookies = load_cookies()
-    if not cookies:
-        print("❌ Failed to get cookies.")
-        return
-
-    product_code = input("Enter a product code to test (e.g., 941.30.011): ").strip()
-    test_all_functions(product_code, cookies)
-
-
-if __name__ == "__main__":
-    main()
+        pytest.fail(f"process_product raised an exception: {e}")

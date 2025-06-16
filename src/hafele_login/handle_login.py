@@ -40,6 +40,7 @@ def handle_login():
     password = os.getenv("hafele_password")
 
     try:
+        print("Starting the handle login process...")
         # Step 1: Click the accept button (if it's there)
         cookie_btn = wait.until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
         cookie_btn.click()
@@ -55,6 +56,7 @@ def handle_login():
                     overlay.remove();  // try to fully remove it
                 }
             """)
+            print("The timeout exception script ran")
         except Exception as e:
             print(f"Failed to remove overlay manually: {e}")
     except Exception as e:
@@ -88,6 +90,7 @@ def handle_login():
         checkbox = driver.find_element(By.ID, "divShopLoginForm_RememberLogin_headerItemLogin")
         checkbox.click()
     except Exception:
+        print("Is it fucking up here bro wtf")
         pass
 
     # Final check for cookie accept button before hafele_login click

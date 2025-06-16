@@ -1,6 +1,5 @@
 import requests
 from bs4 import BeautifulSoup
-import pandas as pd
 import time
 import os
 from dotenv import load_dotenv
@@ -13,22 +12,6 @@ COOKIE_FILE = os.path.join(BASE_DIR, "cookies.pkl")
 INPUT_FILE = os.path.join(BASE_DIR, "input", "product_codes.xlsx")
 OUTPUT_FILE = os.path.join(BASE_DIR, "output", "product_data_results.xlsx")
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:93.0) Gecko/20100101 Firefox/93.0",
-]
-
-PROXIES = [
-    "http://185.200.38.194:8080",
-    "http://188.132.222.28:8080",
-    "http://149.86.159.4:8080",
-]
-
-COOKIE_EXPIRY = 600  # 10 minutes
-LOGIN_INTERVAL = 300  # 5 min
-
-stop_refreshing = False  # Global flag to stop the hafele_login refresh loop
 
 
 def retrieve_product_data(url, code, cookie_information, retries=3):
@@ -61,11 +44,11 @@ def retrieve_product_data(url, code, cookie_information, retries=3):
 
                 else:
                     return {
-                        "kdv_haric_tavsiye_edilen_perakende_fiyat": "urun hafele.com.tr de bulunmuyor",
-                        "kdv_haric_net_fiyat": "urun hafele.com.tr de bulunmuyor",
-                        "kdv_haric_satis_fiyati": "urun hafele.com.tr de bulunmuyor",
+                        "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
+                        "kdv_haric_net_fiyat": None,
+                        "kdv_haric_satis_fiyati": None,
                         "stok_durumu": "urun hafele.com.tr de bulunmuyor",
-                        "stock_amount": "urun hafele.com.tr de bulunmuyor",
+                        "stock_amount": None,
                         "minimum_alis_fiyati": None,
                     }
             else:
