@@ -119,7 +119,7 @@ def process_product(code, cookies_info):
             "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
             "kdv_haric_net_fiyat": None,
             "kdv_haric_satis_fiyati": None,
-            "stok_durumu": "HATA",
+            "stok_durumu": f"HATA: {e}",
             "stock_amount": None,
             "minimum_alis_fiyati": None,
             "minimum_alis_carpi_kdv_haric_satis": None,
