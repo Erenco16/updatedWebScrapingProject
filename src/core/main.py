@@ -178,7 +178,7 @@ def main():
         print(f"\n✅ Done. Saved results to {OUTPUT_FILE}")
         # send_mail_with_excel(os.getenv("gmail_receiver_email"), OUTPUT_FILE)
         # send_mail_with_excel(os.getenv("gmail_receiver_email_2"), OUTPUT_FILE)
-        send_mail_with_excel(os.getenv(informal_mail), OUTPUT_FILE)
+        send_mail_with_excel(informal_mail, OUTPUT_FILE)
         send_mail_without_excel(informal_mail, content=f"{len(codes)} urunun web kazima islemi basariyla tamamlandi.")
 
         et = time.time()
