@@ -68,7 +68,17 @@ def load_initial_cookies():
         print("✅ Initial cookies fetched and saved.")
 
 def parse_price(price_str):
-    return float(price_str.replace(".", "").replace(",", "."))
+    if price_str is None:
+        return None
+
+    # Clean the string
+    cleaned = price_str.replace(".", "").replace(",", ".")
+
+    # Check if it's a valid float
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
 
 def process_product(code):
     global cookies
