@@ -7,6 +7,7 @@ import threading
 from datetime import datetime
 import time
 
+
 # Add src to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
 
@@ -17,6 +18,7 @@ load_dotenv()
 from scraper.scraping_functions import retrieve_product_data
 from scraper.send_mail import send_mail_without_excel, send_mail_with_excel
 from hafele_login.handle_login import handle_login
+import random
 
 # Constants
 BASE_DIR = os.path.dirname(__file__)
@@ -65,12 +67,26 @@ def load_initial_cookies():
         print("✅ Initial cookies fetched and saved.")
 
 
+def parse_price(price_str):
+    if price_str is None:
+        return None
+
+    # Clean the string
+    cleaned = price_str.replace(".", "").replace(",", ".")
+
+    # Check if it's a valid float
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
 def process_product(code):
     global cookies
     url = f"{BASE_PRODUCT_URL}?SKU={code.replace('.', '')}&ProductQuantity=20000"
     with cookie_lock:
         try:
-            data = retrieve_product_data(url, code, cookies)
+            data = retrieve_product_data(url, cookies)
             return {
                 "stock_code": code,
                 "kdv_haric_tavsiye_edilen_perakende_fiyat": data.get("kdv_haric_tavsiye_edilen_perakende_fiyat"),
@@ -78,6 +94,11 @@ def process_product(code):
                 "kdv_haric_satis_fiyati": data.get("kdv_haric_satis_fiyati"),
                 "stok_durumu": data.get("stok_durumu"),
                 "stock_amount": data.get("stock_amount"),
+                "minimum_alis_fiyati": data.get("minimum_alis_fiyati"),
+                "minimum_alis_carpi_kdv_haric_satis": (
+    parse_price(data.get("kdv_haric_satis_fiyati")) * int(data.get("minimum_alis_fiyati"))
+    if data.get("kdv_haric_satis_fiyati") is not None and data.get("minimum_alis_fiyati") is not None
+    else None)
             }
         except Exception as e:
             print(f"❌ Error processing product {code}: {e}")
@@ -86,37 +107,51 @@ def process_product(code):
                 "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
                 "kdv_haric_net_fiyat": None,
                 "kdv_haric_satis_fiyati": None,
-                "stok_durumu": "HATA",
+                "stok_durumu": f"HATA: {e}",
                 "stock_amount": None,
+                "minimum_alis_fiyati": None,
+                "minimum_alis_carpi_kdv_haric_satis": None,
             }
 
 
 def main():
-    st = time.time()
-    load_initial_cookies()
+    informal_mail = os.getenv("gmail_receiver_email_3")
+    try:
+        st = time.time()
+        load_initial_cookies()
 
-    # Start background thread for refreshing cookies
-    threading.Thread(target=refresh_cookies, daemon=True).start()
+        # Start background thread for refreshing cookies
+        threading.Thread(target=refresh_cookies, daemon=True).start()
 
-    print(f"📥 Reading product codes from {INPUT_FILE}")
-    df_input = pd.read_excel(INPUT_FILE)
-    codes = df_input.iloc[:, 0].dropna().astype(str).tolist()
+        print(f"📥 Reading product codes from {INPUT_FILE}")
+        df_input = pd.read_excel(INPUT_FILE)
+        # codes = df_input.iloc[:, 0].dropna().astype(str).tolist()
+        codes = ["589.95.970"]
+        print(f"🔁 Scraping {len(codes)} products...")
 
-    print(f"🔁 Scraping {len(codes)} products...")
-    send_mail_without_excel("erenbasaran50@gmail.com", content=f"{len(codes)} urunun web kazima islemi baslatildi.")
+        # send_mail_without_excel(informal_mail, content=f"{len(codes)} urunun web kazima islemi baslatildi.")
 
-    rows = []
-    for i, code in enumerate(codes, 1):
-        print(f"\n➡️ [{i}/{len(codes)}] Processing: {code}")
-        row = process_product(code)
-        rows.append(row)
+        rows = []
+        for i, code in enumerate(codes, 1):
+            print(f"\n➡️ [{i}/{len(codes)}] Processing: {code}")
+            row = process_product(code)
+            rows.append(row)
 
-    df_out = pd.DataFrame(rows)
-    df_out.to_excel(OUTPUT_FILE, index=False)
-    print(f"\n✅ Done. Saved results to {OUTPUT_FILE}")
-    send_mail_with_excel("erenbasaran50@gmail.com", OUTPUT_FILE)
-    et = time.time()
-    print(f"Time took to scrape {len(codes)} products: {round((et - st)/60, 2)} minutes.")
+        df_out = pd.DataFrame(rows)
+        df_out.to_excel(OUTPUT_FILE, index=False)
+        print(f"\n✅ Done. Saved results to {OUTPUT_FILE}")
+        # send_mail_with_excel(os.getenv("gmail_receiver_email"), OUTPUT_FILE)
+        # send_mail_with_excel(os.getenv("gmail_receiver_email_2"), OUTPUT_FILE)
+        # send_mail_with_excel(informal_mail, OUTPUT_FILE)
+        # send_mail_without_excel(informal_mail, content=f"{len(codes)} urunun web kazima islemi basariyla tamamlandi.")
+
+        et = time.time()
+        print(f"Time took to scrape {len(codes)} products: {round((et - st) / 60, 2)} minutes.")
+
+    except Exception as e:
+        send_mail_without_excel(informal_mail,
+                                content=f"Web kazima islemi hata verdi. Hicbir urunun verisi edinelemedi. Hata: {e}")
+
 
 if __name__ == "__main__":
     main()
