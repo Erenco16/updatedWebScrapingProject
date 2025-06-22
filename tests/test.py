@@ -59,7 +59,7 @@ def test_all_functions(product_code, cookies):
 
     # Test retrieve_product_data
     try:
-        data = retrieve_product_data(url=url, code=product_code, cookie_information=cookies)
+        data = retrieve_product_data(url=url, cookie_information=cookies)
         print("✅ retrieve_product_data:", data)
     except Exception as e:
         print("❌ retrieve_product_data error:", e)
@@ -88,7 +88,7 @@ def test_all_functions(product_code, cookies):
     # Test does_product_exist
     try:
         exists = does_product_exist(product_code, cookies)
-        print("✅ does_product_exist:", exists)
+        print("✅ does_product_exist:", exists[0])
     except Exception as e:
         print("❌ does_product_exist error:", e)
 
