@@ -133,8 +133,7 @@ def main():
 
         print(f"📥 Reading product codes from {INPUT_FILE}")
         df_input = pd.read_excel(INPUT_FILE)
-        # codes = df_input.iloc[:, 0].dropna().astype(str).tolist()
-        codes = ["589.95.970"]
+        codes = df_input.iloc[:, 0].dropna().astype(str).tolist()
         print(f"🔁 Scraping {len(codes)} products...")
 
         send_mail_without_excel(informal_mail, content=f"{len(codes)} urunun web kazima islemi baslatildi.")
