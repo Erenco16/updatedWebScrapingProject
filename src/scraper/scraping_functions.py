@@ -91,7 +91,8 @@ def retrieve_product_data(url, cookie_information, retries=3):
     }
 
 def is_group_product(soup):
-    bom_div = soup.find("div", id="productBomArticlesInformation")
+    bom_div = soup.find("div", class_="productBomInfo")
+    print(f" THIS IS THE BOM DIV AMK{bom_div}")
     if not bom_div:
         return False
     # Check if meaningful content is inside (not just comment)
@@ -117,7 +118,6 @@ def does_product_exist(code, cookies):
     error_message = soup.find("p", class_="headlineStyle4")
     if error_message and f"{code} için aramanız başarısız oldu." in error_message.text:
         return False, soup
-    print(soup.prettify())
     return True, soup
 
 
