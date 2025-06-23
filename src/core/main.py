@@ -87,18 +87,26 @@ def process_product(code):
     with cookie_lock:
         try:
             data = retrieve_product_data(url, cookies)
+            satis_fiyati = parse_price(data.get("kdv_haric_satis_fiyati"))
+            min_alis = data.get("minimum_alis_fiyati")
+            # Conditionally determine stock status
+            if data.get("stok_durumu") is None:
+                stok_durumu = "Stok verisi yok"
+            else:
+                stok_durumu = data.get("stok_durumu")
             return {
                 "stock_code": code,
                 "kdv_haric_tavsiye_edilen_perakende_fiyat": data.get("kdv_haric_tavsiye_edilen_perakende_fiyat"),
                 "kdv_haric_net_fiyat": data.get("kdv_haric_net_fiyat"),
                 "kdv_haric_satis_fiyati": data.get("kdv_haric_satis_fiyati"),
-                "stok_durumu": data.get("stok_durumu"),
+                "stok_durumu": stok_durumu,
                 "stock_amount": data.get("stock_amount"),
                 "minimum_alis_fiyati": data.get("minimum_alis_fiyati"),
                 "minimum_alis_carpi_kdv_haric_satis": (
-    parse_price(data.get("kdv_haric_satis_fiyati")) * int(data.get("minimum_alis_fiyati"))
-    if data.get("kdv_haric_satis_fiyati") is not None and data.get("minimum_alis_fiyati") is not None
-    else None)
+                    satis_fiyati * int(min_alis)
+                    if satis_fiyati is not None and min_alis is not None
+                    else None
+                )
             }
         except Exception as e:
             print(f"❌ Error processing product {code}: {e}")
