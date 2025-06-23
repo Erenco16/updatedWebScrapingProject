@@ -20,6 +20,7 @@ from src.scraper.scraping_functions import (
     does_product_exist
 )
 
+
 from src.hafele_login import handle_login as hafele_login
 COOKIE_FILE = "cookies.pkl"
 BASE_PRODUCT_URL = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
@@ -91,6 +92,7 @@ def test_all_functions(product_code, cookies):
         print("✅ does_product_exist:", exists[0])
     except Exception as e:
         print("❌ does_product_exist error:", e)
+
 
 
 def main():
