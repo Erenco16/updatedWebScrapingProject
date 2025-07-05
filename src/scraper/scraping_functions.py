@@ -44,8 +44,45 @@ def retrieve_product_data(url, cookie_information, retries=3):
 
             response = requests.get(url, headers=headers, cookies=cookie_information, timeout=60)
 
+            # Check for rate limiting
+            if response.status_code == 429:
+                print(f"⚠️ Rate limit detected (429) for URL: {url}")
+                return {
+                    "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
+                    "kdv_haric_net_fiyat": None,
+                    "kdv_haric_satis_fiyati": None,
+                    "stok_durumu": "Rate limit exceeded",
+                    "stock_amount": None,
+                    "minimum_alis_fiyati": None,
+                }
+            
+            # Check for other error status codes
+            if response.status_code == 403:
+                print(f"⚠️ Access forbidden (403) - possible rate limiting for URL: {url}")
+                return {
+                    "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
+                    "kdv_haric_net_fiyat": None,
+                    "kdv_haric_satis_fiyati": None,
+                    "stok_durumu": "Rate limit exceeded",
+                    "stock_amount": None,
+                    "minimum_alis_fiyati": None,
+                }
+
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
+                
+                # Check for rate limiting in HTML content
+                if "rate limit" in response.text.lower() or "too many requests" in response.text.lower():
+                    print(f"⚠️ Rate limit detected in HTML content for URL: {url}")
+                    return {
+                        "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
+                        "kdv_haric_net_fiyat": None,
+                        "kdv_haric_satis_fiyati": None,
+                        "stok_durumu": "Rate limit exceeded",
+                        "stock_amount": None,
+                        "minimum_alis_fiyati": None,
+                    }
+                
                 match = re.search(r"SKU=(\d+)", url)
                 code = match.group(1) if match else None
                 exists, search_soup = does_product_exist(code=code, cookies=cookie_information)
@@ -115,6 +152,12 @@ def does_product_exist(code, cookies):
 
     response = requests.get(url, headers=headers, cookies=cookies)
     print(f"Url for search {url}")
+    
+    # Check for rate limiting
+    if response.status_code == 429 or response.status_code == 403:
+        print(f"⚠️ Rate limit detected during product existence check for {code}")
+        raise Exception("Rate limit exceeded")
+    
     if response.status_code != 200:
         raise Exception(f"Failed to fetch the URL, status code: {response.status_code}")
 
