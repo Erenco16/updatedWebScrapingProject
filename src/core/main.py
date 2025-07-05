@@ -274,7 +274,7 @@ def main():
 
         print(f"📥 Reading product codes from {INPUT_FILE}")
         df_input = pd.read_excel(INPUT_FILE)
-        codes = df_input.iloc[:, 0].dropna().astype(str).tolist()[:1000]
+        codes = df_input.iloc[:, 0].dropna().astype(str).tolist()
         total_count = len(codes)
         print(f"🔁 Scraping {total_count} products with {MAX_WORKERS} workers...")
 
