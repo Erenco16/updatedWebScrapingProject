@@ -168,3 +168,7 @@ cython_debug/
 /src/output/product_data_results.xlsx
 
 credentials.json
+cookies.pkl
+/src/shared/cookies.pkl
+/src/input/token.json
+/src/user_agent.txt
