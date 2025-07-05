@@ -53,7 +53,12 @@ def retrieve_product_data(url, cookie_information, retries=3):
                 if exists:
                     # 🔍 Find the min quantity input
                     input_tag = search_soup.find("input", {"data-testid": "PDSQuantity"})
-                    min_quantity = input_tag["value"].strip() if input_tag and input_tag.has_attr("value") else None
+                    min_quantity = None
+                    from bs4.element import Tag
+                    if isinstance(input_tag, Tag):
+                        value = input_tag.get("value")
+                        if isinstance(value, str):
+                            min_quantity = value.strip()
 
                     if is_group_product(soup):
                         result = handle_group_product(soup, cookie_information)
@@ -156,6 +161,8 @@ def handle_singular_product(soup):
         if alt_link:
             alt_code = alt_link.text.strip()
             alternative_product = f"Alternatif ürün var: {alt_code}"
+        else:
+            alternative_product = "Alternatif ürün var"
 
     return {
         **price_info,
