@@ -166,3 +166,5 @@ cython_debug/
 /tests/user_agent.txt
 /input/token.json
 /src/output/product_data_results.xlsx
+
+credentials.json
