@@ -1,19 +1,15 @@
 import os
-import sys
 import pickle
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
-# Add src directory to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
-
 # Load environment variables
 load_dotenv()
 os.environ["GRID_URL"] = "http://localhost:4444/wd/hub"
 
-# Import functions from your actual modules
-from src.scraper.scraping_functions import (
+# Import functions from your actual modules (match Docker container structure)
+from scraper.scraping_functions import (
     retrieve_product_data,
     extract_price_info,
     handle_singular_product,
@@ -21,7 +17,7 @@ from src.scraper.scraping_functions import (
 )
 
 
-from src.hafele_login import handle_login as hafele_login
+from hafele_login import handle_login as hafele_login
 COOKIE_FILE = "cookies.pkl"
 BASE_PRODUCT_URL = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
 
