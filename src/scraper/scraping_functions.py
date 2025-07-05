@@ -92,7 +92,6 @@ def retrieve_product_data(url, cookie_information, retries=3):
 
 def is_group_product(soup):
     bom_div = soup.find("div", class_="productBomInfo")
-    print(f" THIS IS THE BOM DIV AMK{bom_div}")
     if not bom_div:
         return False
     # Check if meaningful content is inside (not just comment)
@@ -157,12 +156,10 @@ def handle_singular_product(soup):
         if alt_link:
             alt_code = alt_link.text.strip()
             alternative_product = f"Alternatif ürün var: {alt_code}"
-        else:
-            alternative_product = "Alternatif ürün var"
 
     return {
         **price_info,
-        "stok_durumu": alternative_product,
+        "stok_durumu": alternative_product if alternative_product else stock_status,
         "stock_amount": stock_amount,
     }
 
