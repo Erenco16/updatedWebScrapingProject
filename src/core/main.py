@@ -6,6 +6,9 @@ from dotenv import load_dotenv
 import threading
 from datetime import datetime
 import time
+import queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import random
 
 # Add src to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
@@ -17,6 +20,8 @@ load_dotenv()
 from scraper.scraping_functions import retrieve_product_data
 from scraper.send_mail import send_mail_without_excel, send_mail_with_excel
 from hafele_login.handle_login import handle_login
+from core.config import *
+import random
 
 # Constants
 BASE_DIR = os.path.dirname(__file__)
@@ -29,9 +34,77 @@ BASE_PRODUCT_URL = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site
 # Global state
 cookies = None
 cookie_lock = threading.Lock()
+progress_lock = threading.Lock()
+processed_count = 0
+total_count = 0
+rate_limit_errors = 0
+
+
+class CookieManager:
+    """Manages multiple cookie sessions for load distribution"""
+    
+    def __init__(self, max_sessions=MAX_SESSIONS):
+        self.max_sessions = max_sessions
+        self.cookie_sessions = []
+        self.session_lock = threading.Lock()
+        self.initialize_sessions()
+    
+    def initialize_sessions(self):
+        """Initialize multiple cookie sessions"""
+        print(f"🔄 Initializing {self.max_sessions} cookie sessions...")
+        for i in range(self.max_sessions):
+            try:
+                driver = handle_login()
+                session_cookies = driver.get_cookies()
+                driver.quit()
+                self.cookie_sessions.append({
+                    'cookies': session_cookies,
+                    'last_used': time.time(),
+                    'error_count': 0
+                })
+                print(f"✅ Session {i+1} initialized")
+                time.sleep(2)  # Small delay between logins
+            except Exception as e:
+                print(f"❌ Failed to initialize session {i+1}: {e}")
+    
+    def get_available_session(self):
+        """Get the least recently used session"""
+        with self.session_lock:
+            if not self.cookie_sessions:
+                return None
+            
+            # Find session with least recent usage
+            session = min(self.cookie_sessions, key=lambda x: x['last_used'])
+            session['last_used'] = time.time()
+            return session['cookies']
+    
+    def mark_session_error(self, cookies):
+        """Mark a session as having an error"""
+        with self.session_lock:
+            for session in self.cookie_sessions:
+                if session['cookies'] == cookies:
+                    session['error_count'] += 1
+                    if session['error_count'] >= 3:
+                        # Reinitialize this session
+                        self.reinitialize_session(session)
+                    break
+    
+    def reinitialize_session(self, session):
+        """Reinitialize a problematic session"""
+        try:
+            print("🔄 Reinitializing problematic session...")
+            driver = handle_login()
+            session['cookies'] = driver.get_cookies()
+            session['error_count'] = 0
+            session['last_used'] = time.time()
+            driver.quit()
+            print("✅ Session reinitialized")
+        except Exception as e:
+            print(f"❌ Failed to reinitialize session: {e}")
 
 
 def refresh_cookies():
+    """Background thread to refresh cookies periodically"""
     global cookies
     while True:
         print(f"🔁 [{datetime.now().strftime('%H:%M:%S')}] Refreshing cookies...")
@@ -45,10 +118,11 @@ def refresh_cookies():
                 print(f"✅ Cookies refreshed at {datetime.now().strftime('%H:%M:%S')}")
             except Exception as e:
                 print(f"❌ Failed to refresh cookies: {e}")
-        time.sleep(480)  # 8 minutes
+        time.sleep(COOKIE_REFRESH_INTERVAL)
 
 
 def load_initial_cookies():
+    """Load initial cookies from file or create new ones"""
     global cookies
     if os.path.exists(COOKIE_FILE):
         with open(COOKIE_FILE, "rb") as f:
@@ -65,36 +139,134 @@ def load_initial_cookies():
         print("✅ Initial cookies fetched and saved.")
 
 
-def process_product(code):
-    global cookies
+def parse_price(price_str):
+    """Parse price string to float"""
+    if price_str is None:
+        return None
+
+    # Clean the string
+    cleaned = price_str.replace(".", "").replace(",", ".")
+
+    # Check if it's a valid float
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def process_product_with_rate_limiting(code, cookie_manager):
+    """Process a single product with rate limiting and error handling"""
+    global processed_count, rate_limit_errors
+    
     url = f"{BASE_PRODUCT_URL}?SKU={code.replace('.', '')}&ProductQuantity=20000"
-    with cookie_lock:
-        try:
-            data = retrieve_product_data(url, code, cookies)
-            return {
-                "stock_code": code,
-                "kdv_haric_tavsiye_edilen_perakende_fiyat": data.get("kdv_haric_tavsiye_edilen_perakende_fiyat"),
-                "kdv_haric_net_fiyat": data.get("kdv_haric_net_fiyat"),
-                "kdv_haric_satis_fiyati": data.get("kdv_haric_satis_fiyati"),
-                "stok_durumu": data.get("stok_durumu"),
-                "stock_amount": data.get("stock_amount"),
-            }
-        except Exception as e:
-            print(f"❌ Error processing product {code}: {e}")
-            return {
-                "stock_code": code,
-                "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
-                "kdv_haric_net_fiyat": None,
-                "kdv_haric_satis_fiyati": None,
-                "stok_durumu": "HATA",
-                "stock_amount": None,
-            }
+    
+    # Get available cookie session
+    session_cookies = cookie_manager.get_available_session()
+    if not session_cookies:
+        print(f"❌ No available cookie sessions for {code}")
+        return create_error_result(code, "No available cookie sessions")
+    
+    # Add random delay to avoid rate limiting
+    time.sleep(REQUEST_DELAY + random.uniform(0, 1))
+    
+    try:
+        data = retrieve_product_data(url, session_cookies)
+        
+        # Check if we got rate limited
+        if data.get("stok_durumu") == "Rate limit exceeded" or "rate limit" in str(data).lower():
+            rate_limit_errors += 1
+            cookie_manager.mark_session_error(session_cookies)
+            print(f"⚠️ Rate limit hit for {code}, retrying with delay...")
+            time.sleep(RATE_LIMIT_RETRY_DELAY)
+            return process_product_with_rate_limiting(code, cookie_manager)
+        
+        satis_fiyati = parse_price(data.get("kdv_haric_satis_fiyati"))
+        min_alis = data.get("minimum_alis_fiyati")
+        
+        # Conditionally determine stock status
+        raw_stok_durumu = data.get("stok_durumu")
+        if raw_stok_durumu is None or str(raw_stok_durumu).strip() == "":
+            stok_durumu = "Stok verisi yok"
+        else:
+            stok_durumu = raw_stok_durumu
+        
+        result = {
+            "stock_code": code,
+            "kdv_haric_tavsiye_edilen_perakende_fiyat": data.get("kdv_haric_tavsiye_edilen_perakende_fiyat"),
+            "kdv_haric_net_fiyat": data.get("kdv_haric_net_fiyat"),
+            "kdv_haric_satis_fiyati": data.get("kdv_haric_satis_fiyati"),
+            "stok_durumu": stok_durumu,
+            "stock_amount": data.get("stock_amount"),
+            "minimum_alis_fiyati": data.get("minimum_alis_fiyati"),
+            "minimum_alis_carpi_kdv_haric_satis": (
+                satis_fiyati * int(min_alis)
+                if satis_fiyati is not None and min_alis is not None
+                else None
+            )
+        }
+        
+        # Update progress
+        with progress_lock:
+            processed_count += 1
+            print(f"✅ [{processed_count}/{total_count}] Completed: {code}")
+        
+        return result
+        
+    except Exception as e:
+        print(f"❌ Error processing product {code}: {e}")
+        cookie_manager.mark_session_error(session_cookies)
+        return create_error_result(code, str(e))
+
+
+def create_error_result(code, error_msg):
+    """Create a standardized error result"""
+    return {
+        "stock_code": code,
+        "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
+        "kdv_haric_net_fiyat": None,
+        "kdv_haric_satis_fiyati": None,
+        "stok_durumu": f"HATA: {error_msg}",
+        "stock_amount": None,
+        "minimum_alis_fiyati": None,
+        "minimum_alis_carpi_kdv_haric_satis": None,
+    }
+
+
+def process_batch(product_batch, cookie_manager):
+    """Process a batch of products using ThreadPoolExecutor"""
+    results = []
+    
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        # Submit all products in the batch
+        future_to_code = {
+            executor.submit(process_product_with_rate_limiting, code, cookie_manager): code 
+            for code in product_batch
+        }
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_code):
+            code = future_to_code[future]
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                print(f"❌ Exception for {code}: {e}")
+                results.append(create_error_result(code, str(e)))
+    
+    return results
 
 
 def main():
+    global processed_count, total_count
+    
     informal_mail = os.getenv("gmail_receiver_email_3")
     try:
         st = time.time()
+        
+        # Initialize cookie manager for multithreading
+        cookie_manager = CookieManager(max_sessions=MAX_WORKERS)
+        
+        # Load initial cookies for backward compatibility
         load_initial_cookies()
 
         # Start background thread for refreshing cookies
@@ -103,28 +275,52 @@ def main():
         print(f"📥 Reading product codes from {INPUT_FILE}")
         df_input = pd.read_excel(INPUT_FILE)
         codes = df_input.iloc[:, 0].dropna().astype(str).tolist()
+        total_count = len(codes)
+        print(f"🔁 Scraping {total_count} products with {MAX_WORKERS} workers...")
 
-        print(f"🔁 Scraping {len(codes)} products...")
-        send_mail_without_excel("erenbasaran50@gmail.com", content=f"{len(codes)} urunun web kazima islemi baslatildi.")
+        send_mail_without_excel(informal_mail, content=f"{total_count} urunun web kazima islemi baslatildi (multithreaded).")
 
-        rows = []
-        for i, code in enumerate(codes, 1):
-            print(f"\n➡️ [{i}/{len(codes)}] Processing: {code}")
-            row = process_product(code)
-            rows.append(row)
+        all_results = []
+        
+        # Process products in batches
+        for i in range(0, len(codes), BATCH_SIZE):
+            batch = codes[i:i + BATCH_SIZE]
+            batch_num = (i // BATCH_SIZE) + 1
+            total_batches = (len(codes) + BATCH_SIZE - 1) // BATCH_SIZE
+            
+            print(f"\n📦 Processing batch {batch_num}/{total_batches} ({len(batch)} products)")
+            batch_results = process_batch(batch, cookie_manager)
+            all_results.extend(batch_results)
+            
+            # Progress update
+            progress = (len(all_results) / total_count) * 100
+            print(f"📊 Overall progress: {progress:.1f}% ({len(all_results)}/{total_count})")
+            
+            # Rate limit monitoring
+            if rate_limit_errors > 0:
+                print(f"⚠️ Rate limit errors so far: {rate_limit_errors}")
+            
+            # Small delay between batches
+            if i + BATCH_SIZE < len(codes):
+                print("⏳ Waiting between batches...")
+                time.sleep(BATCH_DELAY)
 
-        df_out = pd.DataFrame(rows)
+        df_out = pd.DataFrame(all_results)
         df_out.to_excel(OUTPUT_FILE, index=False)
         print(f"\n✅ Done. Saved results to {OUTPUT_FILE}")
-        send_mail_with_excel(os.getenv("gmail_receiver_email"), OUTPUT_FILE)
-        send_mail_with_excel(os.getenv("gmail_receiver_email_2"), OUTPUT_FILE)
-        send_mail_without_excel(informal_mail, content=f"{len(codes)} urunun web kazima islemi basariyla tamamlandi.")
+        
+        # Send completion email
+        send_mail_with_excel(informal_mail, OUTPUT_FILE)
+        
         et = time.time()
-        print(f"Time took to scrape {len(codes)} products: {round((et - st)/60, 2)} minutes.")
+        duration = round((et - st) / 60, 2)
+        print(f"Time took to scrape {total_count} products: {duration} minutes.")
+        print(f"Rate limit errors encountered: {rate_limit_errors}")
 
     except Exception as e:
         send_mail_without_excel(informal_mail,
                                 content=f"Web kazima islemi hata verdi. Hicbir urunun verisi edinelemedi. Hata: {e}")
+
 
 if __name__ == "__main__":
     main()

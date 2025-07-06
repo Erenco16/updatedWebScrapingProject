@@ -1,26 +1,23 @@
 import os
-import sys
 import pickle
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
-# Add src directory to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
-
 # Load environment variables
 load_dotenv()
 os.environ["GRID_URL"] = "http://localhost:4444/wd/hub"
 
-# Import functions from your actual modules
-from src.scraper.scraping_functions import (
+# Import functions from your actual modules (match Docker container structure)
+from scraper.scraping_functions import (
     retrieve_product_data,
     extract_price_info,
     handle_singular_product,
     does_product_exist
 )
 
-from src.hafele_login import handle_login as hafele_login
+
+from hafele_login import handle_login as hafele_login
 COOKIE_FILE = "cookies.pkl"
 BASE_PRODUCT_URL = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
 
@@ -59,7 +56,7 @@ def test_all_functions(product_code, cookies):
 
     # Test retrieve_product_data
     try:
-        data = retrieve_product_data(url=url, code=product_code, cookie_information=cookies)
+        data = retrieve_product_data(url=url, cookie_information=cookies)
         print("✅ retrieve_product_data:", data)
     except Exception as e:
         print("❌ retrieve_product_data error:", e)
@@ -88,9 +85,10 @@ def test_all_functions(product_code, cookies):
     # Test does_product_exist
     try:
         exists = does_product_exist(product_code, cookies)
-        print("✅ does_product_exist:", exists)
+        print("✅ does_product_exist:", exists[0])
     except Exception as e:
         print("❌ does_product_exist error:", e)
+
 
 
 def main():

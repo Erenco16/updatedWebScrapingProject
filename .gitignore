@@ -165,3 +165,10 @@ cython_debug/
 /tests/session_info.json
 /tests/user_agent.txt
 /input/token.json
+/src/output/product_data_results.xlsx
+
+credentials.json
+cookies.pkl
+/src/shared/cookies.pkl
+/src/input/token.json
+/src/user_agent.txt
