@@ -310,8 +310,12 @@ def main():
         print(f"\n✅ Done. Saved results to {OUTPUT_FILE}")
         
         # Send completion email
-        send_mail_with_excel(informal_mail, OUTPUT_FILE)
-        
+        send_mail_without_excel(informal_mail)
+        send_mail_with_excel(os.getenv("gmail_receiver_email"), OUTPUT_FILE)
+        send_mail_with_excel(os.getenv("gmail_receiver_email_2"), OUTPUT_FILE)
+
+
+
         et = time.time()
         duration = round((et - st) / 60, 2)
         print(f"Time took to scrape {total_count} products: {duration} minutes.")
