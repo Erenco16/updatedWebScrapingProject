@@ -1,10 +1,12 @@
+import re
+
 import requests
-import pickle
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
 from bs4 import BeautifulSoup
 import time
 import os
 from dotenv import load_dotenv
-import random
 
 load_dotenv()
 
@@ -29,27 +31,81 @@ PROXIES = [
 COOKIE_EXPIRY = 600  # 10 minutes
 LOGIN_INTERVAL = 300  # 5 min
 
-stop_refreshing = False  # Global flag to stop the hafele_login refresh loop
 
-
-def retrieve_product_data(url, code, cookie_information, retries=3):
-    """Fetch and parse the HTML to extract stock, price, and group product information."""
+def retrieve_product_data(url, cookie_information, retries=3):
+    """Fetch and parse the HTML to extract stock, price, group info, and min. purchase quantity."""
     for attempt in range(retries):
         try:
             headers = get_random_headers()
             print(f"Requesting URL: {url}")
 
-            # Convert cookies list to dictionary if necessary
             if isinstance(cookie_information, list):
                 cookie_information = {cookie['name']: cookie['value'] for cookie in cookie_information}
 
             response = requests.get(url, headers=headers, cookies=cookie_information, timeout=60)
 
+            # Check for rate limiting
+            if response.status_code == 429:
+                print(f"⚠️ Rate limit detected (429) for URL: {url}")
+                return {
+                    "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
+                    "kdv_haric_net_fiyat": None,
+                    "kdv_haric_satis_fiyati": None,
+                    "stok_durumu": "Rate limit exceeded",
+                    "stock_amount": None,
+                    "minimum_alis_fiyati": None,
+                }
+            
+            # Check for other error status codes
+            if response.status_code == 403:
+                print(f"⚠️ Access forbidden (403) - possible rate limiting for URL: {url}")
+                return {
+                    "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
+                    "kdv_haric_net_fiyat": None,
+                    "kdv_haric_satis_fiyati": None,
+                    "stok_durumu": "Rate limit exceeded",
+                    "stock_amount": None,
+                    "minimum_alis_fiyati": None,
+                }
+
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
-                if does_product_exist(code=code, cookies=cookie_information):
-                    group_table = soup.find("tr", id="productBomArticlesInformation")
-                    return handle_group_product(soup, cookie_information) if group_table else handle_singular_product(soup)
+                
+                # Check for rate limiting in HTML content
+                if "rate limit" in response.text.lower() or "too many requests" in response.text.lower():
+                    print(f"⚠️ Rate limit detected in HTML content for URL: {url}")
+                    return {
+                        "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
+                        "kdv_haric_net_fiyat": None,
+                        "kdv_haric_satis_fiyati": None,
+                        "stok_durumu": "Rate limit exceeded",
+                        "stock_amount": None,
+                        "minimum_alis_fiyati": None,
+                    }
+                
+                match = re.search(r"SKU=(\d+)", url)
+                code = match.group(1) if match else None
+                exists, search_soup = does_product_exist(code=code, cookies=cookie_information)
+
+                if exists:
+                    # 🔍 Find the min quantity input
+                    input_tag = search_soup.find("input", {"data-testid": "PDSQuantity"})
+                    min_quantity = None
+                    from bs4.element import Tag
+                    if isinstance(input_tag, Tag):
+                        value = input_tag.get("value")
+                        if isinstance(value, str):
+                            min_quantity = value.strip()
+
+                    if is_group_product(soup):
+                        result = handle_group_product(soup, cookie_information)
+                    else:
+                        result = handle_singular_product(soup)
+
+                    # ✅ Append the new field to the result
+                    result["minimum_alis_fiyati"] = min_quantity
+                    return result
+
                 else:
                     return {
                         "kdv_haric_tavsiye_edilen_perakende_fiyat": "urun hafele.com.tr de bulunmuyor",
@@ -57,6 +113,7 @@ def retrieve_product_data(url, code, cookie_information, retries=3):
                         "kdv_haric_satis_fiyati": "urun hafele.com.tr de bulunmuyor",
                         "stok_durumu": "urun hafele.com.tr de bulunmuyor",
                         "stock_amount": "urun hafele.com.tr de bulunmuyor",
+                        "minimum_alis_fiyati": None,
                     }
             else:
                 print(f"Request failed with status {response.status_code}. Retrying...")
@@ -72,7 +129,16 @@ def retrieve_product_data(url, code, cookie_information, retries=3):
         "kdv_haric_satis_fiyati": None,
         "stok_durumu": None,
         "stock_amount": None,
+        "minimum_alis_fiyati": None,
     }
+
+def is_group_product(soup):
+    bom_div = soup.find("div", class_="productBomInfo")
+    if not bom_div:
+        return False
+    # Check if meaningful content is inside (not just comment)
+    return bool(bom_div.find("table")) or bool(bom_div.select_one(".BomArticlesTable"))
+
 
 def does_product_exist(code, cookies):
     print(f"Checking existence of product {code}...")
@@ -80,19 +146,27 @@ def does_product_exist(code, cookies):
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
+
     if isinstance(cookies, list):
         cookies = {cookie["name"]: cookie["value"] for cookie in cookies}
 
     response = requests.get(url, headers=headers, cookies=cookies)
     print(f"Url for search {url}")
+    
+    # Check for rate limiting
+    if response.status_code == 429 or response.status_code == 403:
+        print(f"⚠️ Rate limit detected during product existence check for {code}")
+        raise Exception("Rate limit exceeded")
+    
     if response.status_code != 200:
         raise Exception(f"Failed to fetch the URL, status code: {response.status_code}")
 
     soup = BeautifulSoup(response.text, "html.parser")
     error_message = soup.find("p", class_="headlineStyle4")
     if error_message and f"{code} için aramanız başarısız oldu." in error_message.text:
-        return False
-    return True
+        return False, soup
+    return True, soup
+
 
 def handle_singular_product(soup):
     price_info = extract_price_info(soup)
@@ -118,13 +192,27 @@ def handle_singular_product(soup):
                 stock_status = availability_text
     if stock_status is None:
         stock_info_element = soup.select_one("#productAvailabilityInformation .availability-flag")
-        stock_status = stock_info_element.text.strip() if stock_info_element else "Stok bilgisi bulunamadi"
+        stock_status = stock_info_element.text.strip() if stock_info_element and stock_info_element.text.strip() else "Stok bilgisi bulunamadi"
     print(f"📌 Final Stock Amount: {stock_amount}, Status: {stock_status}\n")
+
+    # === ✅ New Section: Detect alternative product if exists ===
+    alternative_product = None
+    substitution_div = soup.find("div", id="SubstitutionArticlesContainer")
+    alt_phrase = "ürünün alternatifi veya yerine geçen bir ürün var:"
+    if substitution_div and alt_phrase in substitution_div.get_text(strip=True):
+        alt_link = substitution_div.find("a")
+        if alt_link:
+            alt_code = alt_link.text.strip()
+            alternative_product = f"Alternatif ürün var: {alt_code}"
+        else:
+            alternative_product = "Alternatif ürün var"
+
     return {
         **price_info,
-        "stok_durumu": stock_status,
+        "stok_durumu": alternative_product if alternative_product else stock_status,
         "stock_amount": stock_amount,
     }
+
 
 def handle_group_product(soup, cookies):
     base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
@@ -165,12 +253,12 @@ def retrieve_singular_stock(url, cookies):
 
 def extract_price_info(soup):
     prices = soup.select("span.price")
-    units = soup.select("span.perUnit")
     return {
-        "kdv_haric_tavsiye_edilen_perakende_fiyat": prices[2].text.strip() if len(prices) > 2 else None,
-        "kdv_haric_net_fiyat": prices[0].text.strip() if len(prices) > 0 else None,
-        "kdv_haric_satis_fiyati": prices[1].text.strip() if len(prices) > 1 else None,
+        "kdv_haric_tavsiye_edilen_perakende_fiyat": prices[2].text.replace("TL", "").strip() if len(prices) > 2 else None,
+        "kdv_haric_net_fiyat": prices[0].text.replace("TL", "").strip() if len(prices) > 0 else None,
+        "kdv_haric_satis_fiyati": prices[1].text.replace("TL", "").strip() if len(prices) > 1 else None,
     }
+
 
 def get_random_headers():
     return {
@@ -195,17 +283,3 @@ def is_cookie_valid(cookie_file, expiry_time):
         os.path.exists(cookie_file)
         and (time.time() - os.path.getmtime(cookie_file)) < expiry_time
     )
-
-def fetch_product_page(url, cookies):
-    session = requests.Session()
-    for cookie in cookies:
-        session.cookies.set(cookie['name'], cookie['value'])
-
-    headers = {"User-Agent": "Mozilla/5.0"}
-    response = session.get(url, headers=headers, timeout=30)
-
-    if response.status_code == 200:
-        return response.text
-    else:
-        print(f"❌ Failed to fetch product page. Status: {response.status_code}")
-        return None
