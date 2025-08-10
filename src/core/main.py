@@ -9,6 +9,7 @@ import time
 import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import random
+import requests
 
 # Add src to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
@@ -67,14 +68,34 @@ class CookieManager:
             except Exception as e:
                 print(f"❌ Failed to initialize session {i+1}: {e}")
     
+    def validate_session(self, cookies):
+        """Check if the session cookies are still valid by making a lightweight request."""
+        try:
+            session = requests.Session()
+            for cookie in cookies:
+                try:
+                    session.cookies.set(cookie["name"], cookie["value"])
+                except Exception:
+                    continue
+            resp = session.get("https://www.hafele.com.tr/", timeout=10)
+            # If redirected to login or forbidden, cookies are invalid
+            if resp.status_code != 200 or "login" in resp.url.lower():
+                return False
+            return True
+        except Exception as e:
+            print(f"⚠️ Session validation error: {e}")
+            return False
+
     def get_available_session(self):
-        """Get the least recently used session"""
+        """Get the least recently used session, validating and refreshing if needed."""
         with self.session_lock:
             if not self.cookie_sessions:
                 return None
-            
-            # Find session with least recent usage
             session = min(self.cookie_sessions, key=lambda x: x['last_used'])
+            # Validate session before returning
+            if not self.validate_session(session['cookies']):
+                print("🔄 Session invalid, reinitializing...")
+                self.reinitialize_session(session)
             session['last_used'] = time.time()
             return session['cookies']
     
@@ -308,10 +329,12 @@ def main():
         df_out = pd.DataFrame(all_results)
         df_out.to_excel(OUTPUT_FILE, index=False)
         print(f"\n✅ Done. Saved results to {OUTPUT_FILE}")
-        
         # Send completion email
-        send_mail_with_excel(informal_mail, OUTPUT_FILE)
-        
+        send_mail_without_excel(informal_mail, content="Web kazima islemi basariyla tamamlandi")
+        send_mail_with_excel(os.getenv("gmail_receiver_email"), OUTPUT_FILE)
+        send_mail_with_excel(os.getenv("gmail_receiver_email_2"), OUTPUT_FILE)
+
+
         et = time.time()
         duration = round((et - st) / 60, 2)
         print(f"Time took to scrape {total_count} products: {duration} minutes.")
