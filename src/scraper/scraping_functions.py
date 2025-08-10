@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 import time
 import os
 from dotenv import load_dotenv
+from core.config import Hafele_BASE_URL, Hafele_PRODUCT_API_PATH, Hafele_SEARCH_API_PATH
 
 load_dotenv()
 
@@ -107,14 +108,14 @@ def retrieve_product_data(url, cookie_information, retries=3):
                     return result
 
                 else:
-                    return {
-                        "kdv_haric_tavsiye_edilen_perakende_fiyat": "urun hafele.com.tr de bulunmuyor",
-                        "kdv_haric_net_fiyat": "urun hafele.com.tr de bulunmuyor",
-                        "kdv_haric_satis_fiyati": "urun hafele.com.tr de bulunmuyor",
-                        "stok_durumu": "urun hafele.com.tr de bulunmuyor",
-                        "stock_amount": "urun hafele.com.tr de bulunmuyor",
-                        "minimum_alis_fiyati": None,
-                    }
+                                    return {
+                    "kdv_haric_tavsiye_edilen_perakende_fiyat": f"urun {Hafele_DOMAIN} de bulunmuyor",
+                    "kdv_haric_net_fiyat": f"urun {Hafele_DOMAIN} de bulunmuyor",
+                    "kdv_haric_satis_fiyati": f"urun {Hafele_DOMAIN} de bulunmuyor",
+                    "stok_durumu": f"urun {Hafele_DOMAIN} de bulunmuyor",
+                    "stock_amount": f"urun {Hafele_DOMAIN} de bulunmuyor",
+                    "minimum_alis_fiyati": None,
+                }
             else:
                 print(f"Request failed with status {response.status_code}. Retrying...")
         except requests.exceptions.RequestException as e:
@@ -142,7 +143,7 @@ def is_group_product(soup):
 
 def does_product_exist(code, cookies):
     print(f"Checking existence of product {code}...")
-    url = f"https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewParametricSearch-SimpleOfferSearch?SearchType=all&SearchTerm={code}"
+    url = f"{Hafele_BASE_URL}{Hafele_SEARCH_API_PATH}?SearchType=all&SearchTerm={code}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
@@ -215,7 +216,7 @@ def handle_singular_product(soup):
 
 
 def handle_group_product(soup, cookies):
-    base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
+    base_url = f"{Hafele_BASE_URL}{Hafele_PRODUCT_API_PATH}"
     sub_product_rows = soup.select(".BomArticlesTable .productDataTableQty")
     sub_product_stocks = []
     for row in sub_product_rows:

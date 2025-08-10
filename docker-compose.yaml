@@ -2,9 +2,16 @@ services:
   selenium:
     image: seleniarm/standalone-chromium:latest
     container_name: selenium
-    shm_size: 2gb
+    shm_size: 4gb
+    mem_limit: 4g
+    cpus: 2.0
     ports:
       - "4444:4444"
+    environment:
+      - SE_NODE_MAX_SESSIONS=2
+      - SE_NODE_OVERRIDE_MAX_SESSIONS=true
+      - SE_SESSION_REQUEST_TIMEOUT=60
+      - SE_SESSION_RETRY_INTERVAL=5
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://selenium:4444/status" ]
       interval: 5s
