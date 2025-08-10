@@ -295,6 +295,12 @@ def main():
 
         print(f"📥 Reading product codes from {INPUT_FILE}")
         df_input = pd.read_excel(INPUT_FILE)
+        
+        # Randomly pick 100 rows
+        if len(df_input) > 100:
+            df_input = df_input.sample(n=100, random_state=42)  # random_state for reproducibility
+            print(f"🎲 Randomly selected 100 rows from {len(df_input)} total rows")
+        
         codes = df_input.iloc[:, 0].dropna().astype(str).tolist()
         total_count = len(codes)
         print(f"🔁 Scraping {total_count} products with {MAX_WORKERS} workers...")
@@ -330,9 +336,10 @@ def main():
         df_out.to_excel(OUTPUT_FILE, index=False)
         print(f"\n✅ Done. Saved results to {OUTPUT_FILE}")
         # Send completion email
-        send_mail_without_excel(informal_mail, content="Web kazima islemi basariyla tamamlandi")
-        send_mail_with_excel(os.getenv("gmail_receiver_email"), OUTPUT_FILE)
-        send_mail_with_excel(os.getenv("gmail_receiver_email_2"), OUTPUT_FILE)
+        # send_mail_without_excel(informal_mail, content="Web kazima islemi basariyla tamamlandi")
+        send_mail_with_excel(os.getenv("informal_mail"), OUTPUT_FILE)
+        # send_mail_with_excel(os.getenv("gmail_receiver_email"), OUTPUT_FILE)
+        # send_mail_with_excel(os.getenv("gmail_receiver_email_2"), OUTPUT_FILE)
 
 
         et = time.time()
