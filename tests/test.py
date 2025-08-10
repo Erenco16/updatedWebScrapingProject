@@ -30,21 +30,33 @@ from scraper.scraping_functions import (
 
 
 from hafele_login import handle_login as hafele_login
+from core.config import Hafele_BASE_URL, Hafele_PRODUCT_API_PATH
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 COOKIE_FILE = os.path.join(PROJECT_ROOT, "shared", "cookies.pkl")
-BASE_PRODUCT_URL = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
+BASE_PRODUCT_URL = f"{Hafele_BASE_URL}{Hafele_PRODUCT_API_PATH}"
 
 
 def load_cookies():
-    driver = hafele_login.handle_login()
-    cookies = driver.get_cookies()
-    driver.quit()
-
-    os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
-    with open(COOKIE_FILE, "wb") as file:
-        pickle.dump(cookies, file)
-
-    return cookies
+    try:
+        print("🔄 Starting login process...")
+        driver = hafele_login.handle_login()
+        cookies = driver.get_cookies()
+        driver.quit()
+        
+        print(f"✅ Successfully obtained {len(cookies)} cookies")
+        
+        # Save cookies
+        os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
+        with open(COOKIE_FILE, "wb") as file:
+            pickle.dump(cookies, file)
+        
+        print(f"💾 Cookies saved to {COOKIE_FILE}")
+        return cookies
+        
+    except Exception as e:
+        print(f"❌ Failed to load cookies: {e}")
+        print("🔍 Check the debug screenshots if they were created")
+        return None
 
 
 def fetch_product_page(url, cookies):
@@ -106,6 +118,19 @@ def test_all_functions(product_code, cookies):
 
 
 def main():
+    # Check if Selenium service is running
+    try:
+        import requests
+        response = requests.get("http://localhost:4444/status", timeout=5)
+        if response.status_code == 200:
+            print("✅ Selenium service is running")
+        else:
+            print("⚠️ Selenium service responded with unexpected status")
+    except Exception as e:
+        print(f"❌ Selenium service is not running: {e}")
+        print("💡 Make sure to start the Selenium service with: docker-compose up selenium")
+        return
+    
     cookies = load_cookies()
     if not cookies:
         print("❌ Failed to get cookies.")
