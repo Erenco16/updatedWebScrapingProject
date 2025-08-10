@@ -4,6 +4,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from scraping_functions import retrieve_product_data, is_cookie_valid, fetch_product_page
 import time
+from core.config import Hafele_BASE_URL, Hafele_PRODUCT_API_PATH
 
 
 # Load environment variables
@@ -37,7 +38,7 @@ def wait_for_login():
 def run_scraper_once(code):
     """Scrape a single product code and return its row with full logging."""
 
-    url = f"https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS?SKU={code.replace('.', '')}&ProductQuantity=20000"
+    url = f"{Hafele_BASE_URL}{Hafele_PRODUCT_API_PATH}?SKU={code.replace('.', '')}&ProductQuantity=20000"
 
     try:
         print(f"\n🔍 Scraping product: {code}")
