@@ -7,6 +7,15 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 
+# Add the root directory to sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# Add the src directory to sys.path to resolve imports from src
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
+
+# Add the src directory to sys.path to resolve imports from src
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
+
 # Load environment variables
 load_dotenv()
 os.environ["GRID_URL"] = "http://localhost:4444/wd/hub"
@@ -21,7 +30,8 @@ from scraper.scraping_functions import (
 
 
 from hafele_login import handle_login as hafele_login
-COOKIE_FILE = "cookies.pkl"
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+COOKIE_FILE = os.path.join(PROJECT_ROOT, "shared", "cookies.pkl")
 BASE_PRODUCT_URL = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
 
 
@@ -30,6 +40,7 @@ def load_cookies():
     cookies = driver.get_cookies()
     driver.quit()
 
+    os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
     with open(COOKIE_FILE, "wb") as file:
         pickle.dump(cookies, file)
 
