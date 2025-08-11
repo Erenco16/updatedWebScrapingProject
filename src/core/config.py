@@ -25,6 +25,7 @@ PROGRESS_UPDATE_INTERVAL = 10  # Update progress every N products
 
 # Website Configuration
 Hafele_BASE_URL = os.getenv("HAFELE_BASE_URL", "https://www.hafele.com.tr")
+Hafele_LOGIN_URL = os.getenv("HAFELE_LOGIN_URL", "https://www.hafele.com.tr/tr")
 Hafele_DOMAIN = os.getenv("HAFELE_DOMAIN", "hafele.com.tr")
 Hafele_PRODUCT_API_PATH = os.getenv("HAFELE_PRODUCT_API_PATH", "/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS")
 Hafele_SEARCH_API_PATH = os.getenv("HAFELE_SEARCH_API_PATH", "/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewParametricSearch-SimpleOfferSearch") 

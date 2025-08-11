@@ -7,7 +7,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from core.config import Hafele_BASE_URL, Hafele_DOMAIN
+from core.config import Hafele_BASE_URL, Hafele_LOGIN_URL, Hafele_DOMAIN
 
 def create_session_from_cookies(cookies: List[dict]) -> requests.Session:
     """Creates a requests.Session with Selenium cookies."""
@@ -50,7 +50,7 @@ def fetch_product_page_selenium(url: str, cookies: List[dict]) -> str:
 
     try:
         # Navigate to domain to allow cookie injection
-        driver.get(f"{Hafele_BASE_URL}/")
+        driver.get(f"{Hafele_LOGIN_URL}/")
         time.sleep(2)
 
         for cookie in cookies:

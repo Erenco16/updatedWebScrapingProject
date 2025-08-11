@@ -56,7 +56,7 @@ def run_scraper_once(code):
             print(f"🧪 First 2 cookies: {cookies[:2]}")
 
         # Try calling retrieve_product_data
-        result = retrieve_product_data(url=url, code=code, cookie_information=cookies)
+        result = retrieve_product_data(url=url, cookie_information=cookies)
         print("✅ retrieve_product_data returned:")
         for k, v in result.items():
             print(f"   - {k}: {v}")
