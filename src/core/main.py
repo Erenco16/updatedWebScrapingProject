@@ -30,7 +30,7 @@ ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, ".."))
 INPUT_FILE = os.path.join(ROOT_DIR, "input", "product_codes.xlsx")
 OUTPUT_FILE = os.path.join(ROOT_DIR, "output", "product_data_results.xlsx")
 COOKIE_FILE = os.path.join(ROOT_DIR, "shared", "cookies.pkl")
-BASE_PRODUCT_URL = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
+BASE_PRODUCT_URL = f"{Hafele_BASE_URL}{Hafele_PRODUCT_API_PATH}"
 
 # Global state
 cookies = None
@@ -42,7 +42,7 @@ rate_limit_errors = 0
 
 
 class CookieManager:
-    """Manages multiple cookie sessions for load distribution"""
+    """Simplified cookie manager with better error handling"""
     
     def __init__(self, max_sessions=MAX_SESSIONS):
         self.max_sessions = max_sessions
@@ -51,53 +51,125 @@ class CookieManager:
         self.initialize_sessions()
     
     def initialize_sessions(self):
-        """Initialize multiple cookie sessions"""
+        """Initialize cookie sessions with better error handling"""
         print(f"🔄 Initializing {self.max_sessions} cookie sessions...")
-        for i in range(self.max_sessions):
+        
+        # First, try to load existing cookies
+        if os.path.exists(COOKIE_FILE):
             try:
+                with open(COOKIE_FILE, "rb") as f:
+                    existing_cookies = pickle.load(f)
+                self.cookie_sessions.append({
+                    'cookies': existing_cookies,
+                    'last_used': time.time(),
+                    'error_count': 0,
+                    'source': 'file'
+                })
+                print("✅ Loaded existing cookies from file")
+            except Exception as e:
+                print(f"⚠️ Failed to load existing cookies: {e}")
+        
+        # If we don't have enough sessions, try to create new ones
+        while len(self.cookie_sessions) < self.max_sessions:
+            try:
+                print(f"🔄 Creating new session {len(self.cookie_sessions) + 1}...")
                 driver = handle_login()
                 session_cookies = driver.get_cookies()
                 driver.quit()
+                
                 self.cookie_sessions.append({
                     'cookies': session_cookies,
                     'last_used': time.time(),
-                    'error_count': 0
+                    'error_count': 0,
+                    'source': 'new'
                 })
-                print(f"✅ Session {i+1} initialized")
-                time.sleep(2)  # Small delay between logins
+                print(f"✅ Session {len(self.cookie_sessions)} created successfully")
+                
+                # Save the new cookies
+                try:
+                    os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
+                    with open(COOKIE_FILE, "wb") as f:
+                        pickle.dump(session_cookies, f)
+                    print("💾 New cookies saved to file")
+                except Exception as e:
+                    print(f"⚠️ Failed to save cookies: {e}")
+                
+                time.sleep(3)  # Delay between logins
+                
             except Exception as e:
-                print(f"❌ Failed to initialize session {i+1}: {e}")
+                print(f"❌ Failed to create session {len(self.cookie_sessions) + 1}: {e}")
+                break  # Stop trying if we can't create any more sessions
+        
+        if not self.cookie_sessions:
+            print("❌ No cookie sessions available")
+        else:
+            print(f"✅ Cookie manager initialized with {len(self.cookie_sessions)} sessions")
     
     def validate_session(self, cookies):
-        """Check if the session cookies are still valid by making a lightweight request."""
-        try:
-            session = requests.Session()
-            for cookie in cookies:
-                try:
-                    session.cookies.set(cookie["name"], cookie["value"])
-                except Exception:
-                    continue
-            resp = session.get("https://www.hafele.com.tr/", timeout=10)
-            # If redirected to login or forbidden, cookies are invalid
-            if resp.status_code != 200 or "login" in resp.url.lower():
-                return False
-            return True
-        except Exception as e:
-            print(f"⚠️ Session validation error: {e}")
+        """Simplified session validation - just check if cookies exist and have values"""
+        if not cookies:
             return False
+        
+        # Check if we have essential cookies
+        essential_cookies = ['JSESSIONID', 'BIGipServer', 'ASP.NET_SessionId']
+        cookie_names = [cookie.get('name', '') for cookie in cookies]
+        
+        # If we have any essential cookies, consider it valid
+        has_essential = any(name in cookie_names for name in essential_cookies)
+        
+        if not has_essential:
+            print("⚠️ No essential cookies found in session")
+            return False
+        
+        return True
 
     def get_available_session(self):
-        """Get the least recently used session, validating and refreshing if needed."""
+        """Get an available session with simplified logic"""
         with self.session_lock:
             if not self.cookie_sessions:
+                print("❌ No cookie sessions available")
                 return None
+            
+            # Get the least recently used session
             session = min(self.cookie_sessions, key=lambda x: x['last_used'])
-            # Validate session before returning
+            
+            # Simple validation - just check if cookies exist
             if not self.validate_session(session['cookies']):
-                print("🔄 Session invalid, reinitializing...")
-                self.reinitialize_session(session)
+                print("🔄 Session validation failed, trying to refresh...")
+                if not self.refresh_session(session):
+                    return None
+            
             session['last_used'] = time.time()
             return session['cookies']
+    
+    def refresh_session(self, session):
+        """Refresh a session by creating a new login"""
+        try:
+            print("🔄 Refreshing session...")
+            driver = handle_login()
+            new_cookies = driver.get_cookies()
+            driver.quit()
+            
+            session['cookies'] = new_cookies
+            session['error_count'] = 0
+            session['last_used'] = time.time()
+            session['source'] = 'refreshed'
+            
+            # Save the refreshed cookies
+            try:
+                with open(COOKIE_FILE, "wb") as f:
+                    pickle.dump(new_cookies, f)
+                print("💾 Refreshed cookies saved to file")
+            except Exception as e:
+                print(f"⚠️ Failed to save refreshed cookies: {e}")
+            
+            print("✅ Session refreshed successfully")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Failed to refresh session: {e}")
+            session['error_count'] += 1
+            return False
     
     def mark_session_error(self, cookies):
         """Mark a session as having an error"""
@@ -105,59 +177,18 @@ class CookieManager:
             for session in self.cookie_sessions:
                 if session['cookies'] == cookies:
                     session['error_count'] += 1
-                    if session['error_count'] >= 3:
-                        # Reinitialize this session
-                        self.reinitialize_session(session)
+                    print(f"⚠️ Session error count: {session['error_count']}")
+                    
+                    if session['error_count'] >= 2:  # Reduced threshold
+                        print("🔄 Too many errors, refreshing session...")
+                        self.refresh_session(session)
                     break
-    
-    def reinitialize_session(self, session):
-        """Reinitialize a problematic session"""
-        try:
-            print("🔄 Reinitializing problematic session...")
-            driver = handle_login()
-            session['cookies'] = driver.get_cookies()
-            session['error_count'] = 0
-            session['last_used'] = time.time()
-            driver.quit()
-            print("✅ Session reinitialized")
-        except Exception as e:
-            print(f"❌ Failed to reinitialize session: {e}")
 
 
-def refresh_cookies():
-    """Background thread to refresh cookies periodically"""
-    global cookies
-    while True:
-        print(f"🔁 [{datetime.now().strftime('%H:%M:%S')}] Refreshing cookies...")
-        with cookie_lock:
-            try:
-                driver = handle_login()
-                cookies = driver.get_cookies()
-                driver.quit()
-                with open(COOKIE_FILE, "wb") as f:
-                    pickle.dump(cookies, f)
-                print(f"✅ Cookies refreshed at {datetime.now().strftime('%H:%M:%S')}")
-            except Exception as e:
-                print(f"❌ Failed to refresh cookies: {e}")
-        time.sleep(COOKIE_REFRESH_INTERVAL)
+# Removed the old refresh_cookies function as it's now handled by CookieManager
 
 
-def load_initial_cookies():
-    """Load initial cookies from file or create new ones"""
-    global cookies
-    if os.path.exists(COOKIE_FILE):
-        with open(COOKIE_FILE, "rb") as f:
-            cookies = pickle.load(f)
-            print("✅ Initial cookies loaded from file.")
-    else:
-        print("⚠️ No cookie file found. Logging in initially...")
-        driver = handle_login()
-        cookies = driver.get_cookies()
-        driver.quit()
-        os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
-        with open(COOKIE_FILE, "wb") as f:
-            pickle.dump(cookies, f)
-        print("✅ Initial cookies fetched and saved.")
+# Removed the old load_initial_cookies function as it's now handled by CookieManager
 
 
 def parse_price(price_str):
@@ -280,21 +311,26 @@ def process_batch(product_batch, cookie_manager):
 def main():
     global processed_count, total_count
     
-    informal_mail = os.getenv("gmail_receiver_email_3")
+    informal_mail = os.getenv("informal_mail")
     try:
         st = time.time()
         
         # Initialize cookie manager for multithreading
         cookie_manager = CookieManager(max_sessions=MAX_WORKERS)
         
-        # Load initial cookies for backward compatibility
-        load_initial_cookies()
-
-        # Start background thread for refreshing cookies
-        threading.Thread(target=refresh_cookies, daemon=True).start()
+        # Check if we have any working sessions
+        if not cookie_manager.cookie_sessions:
+            print("❌ No cookie sessions available. Cannot proceed with scraping.")
+            return
 
         print(f"📥 Reading product codes from {INPUT_FILE}")
         df_input = pd.read_excel(INPUT_FILE)
+        
+        # Randomly pick 100 rows
+        if len(df_input) > 10:
+            df_input = df_input.sample(n=10, random_state=42)  # random_state for reproducibility
+            print(f"🎲 Randomly selected 10 rows from {len(df_input)} total rows")
+        
         codes = df_input.iloc[:, 0].dropna().astype(str).tolist()
         total_count = len(codes)
         print(f"🔁 Scraping {total_count} products with {MAX_WORKERS} workers...")
@@ -330,9 +366,10 @@ def main():
         df_out.to_excel(OUTPUT_FILE, index=False)
         print(f"\n✅ Done. Saved results to {OUTPUT_FILE}")
         # Send completion email
-        send_mail_without_excel(informal_mail, content="Web kazima islemi basariyla tamamlandi")
-        send_mail_with_excel(os.getenv("gmail_receiver_email"), OUTPUT_FILE)
-        send_mail_with_excel(os.getenv("gmail_receiver_email_2"), OUTPUT_FILE)
+        # send_mail_without_excel(informal_mail, content="Web kazima islemi basariyla tamamlandi")
+        send_mail_with_excel(informal_mail, OUTPUT_FILE)
+        # send_mail_with_excel(os.getenv("gmail_receiver_email"), OUTPUT_FILE)
+        # send_mail_with_excel(os.getenv("gmail_receiver_email_2"), OUTPUT_FILE)
 
 
         et = time.time()
