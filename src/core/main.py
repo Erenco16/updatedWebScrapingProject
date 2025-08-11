@@ -327,9 +327,9 @@ def main():
         df_input = pd.read_excel(INPUT_FILE)
         
         # Randomly pick 100 rows
-        if len(df_input) > 100:
-            df_input = df_input.sample(n=100, random_state=42)  # random_state for reproducibility
-            print(f"🎲 Randomly selected 100 rows from {len(df_input)} total rows")
+        if len(df_input) > 10:
+            df_input = df_input.sample(n=10, random_state=42)  # random_state for reproducibility
+            print(f"🎲 Randomly selected 10 rows from {len(df_input)} total rows")
         
         codes = df_input.iloc[:, 0].dropna().astype(str).tolist()
         total_count = len(codes)

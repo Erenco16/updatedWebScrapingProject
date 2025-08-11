@@ -9,7 +9,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
-from core.config import Hafele_BASE_URL
+from core.config import Hafele_LOGIN_URL
 
 load_dotenv()
 
@@ -34,7 +34,7 @@ def handle_login():
 
     wait = WebDriverWait(driver, 15)
 
-    driver.get(f"{Hafele_BASE_URL}/")
+    driver.get(f"{Hafele_LOGIN_URL}/")
     time.sleep(5)  # Increased wait time
     
     # Debug: Print page title and URL
