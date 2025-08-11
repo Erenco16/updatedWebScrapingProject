@@ -9,6 +9,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+from core.config import Hafele_LOGIN_URL
 
 load_dotenv()
 
@@ -33,11 +34,31 @@ def handle_login():
 
     wait = WebDriverWait(driver, 15)
 
-    driver.get("https://www.hafele.com.tr/")
-    time.sleep(3)
+    driver.get(f"{Hafele_LOGIN_URL}/")
+    time.sleep(5)  # Increased wait time
+    
+    # Debug: Print page title and URL
+    print(f"📄 Page title: {driver.title}")
+    print(f"🌐 Current URL: {driver.current_url}")
+    
+    # Debug: Check if page loaded properly
+    try:
+        page_source_length = len(driver.page_source)
+        print(f"📏 Page source length: {page_source_length}")
+        if page_source_length < 1000:
+            print("⚠️ Page seems to be too short, might not have loaded properly")
+    except Exception as e:
+        print(f"⚠️ Could not check page source: {e}")
 
     username = os.getenv("hafele_username")
     password = os.getenv("hafele_password")
+    
+    # Check if we have credentials
+    if not username or not password:
+        print("❌ Missing hafele_username or hafele_password environment variables")
+        raise Exception("Missing login credentials")
+    
+    print(f"👤 Username: {username[:3]}***")  # Only show first 3 characters for security
 
     try:
         # Step 1: Click the accept button (if it's there)
@@ -74,14 +95,105 @@ def handle_login():
         print(f"No 'Stay Here' modal found or already handled: {e}")
 
     # Step 3: Click on the hafele_login button in header
-    login_header = wait.until(EC.element_to_be_clickable((By.ID, "headerLoginLinkAction")))
-    driver.execute_script("arguments[0].click();", login_header)
+    try:
+        # Try multiple possible selectors for the login button
+        login_selectors = [
+            (By.ID, "headerLoginLinkAction"),
+            (By.CSS_SELECTOR, "[data-testid='headerLoginLinkAction']"),
+            (By.XPATH, "//a[contains(@class, 'login') or contains(text(), 'Giriş') or contains(text(), 'Login')]"),
+            (By.XPATH, "//button[contains(@class, 'login') or contains(text(), 'Giriş') or contains(text(), 'Login')]"),
+            (By.CSS_SELECTOR, ".header-login, .login-link, .user-login")
+        ]
+        
+        login_header = None
+        for selector_type, selector_value in login_selectors:
+            try:
+                print(f"🔍 Trying login selector: {selector_type} = {selector_value}")
+                login_header = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((selector_type, selector_value))
+                )
+                print(f"✅ Found login element with selector: {selector_type} = {selector_value}")
+                break
+            except TimeoutException:
+                print(f"❌ Selector failed: {selector_type} = {selector_value}")
+                continue
+        
+        if login_header:
+            driver.execute_script("arguments[0].click();", login_header)
+        else:
+            print("❌ Could not find login button with any selector")
+            # Take a screenshot for debugging
+            driver.save_screenshot("login_page_debug.png")
+            print("📸 Screenshot saved as login_page_debug.png")
+            raise Exception("Login button not found")
+            
+    except Exception as e:
+        print(f"❌ Failed to click login button: {e}")
+        # Take a screenshot for debugging
+        driver.save_screenshot("login_error_debug.png")
+        print("📸 Error screenshot saved as login_error_debug.png")
+        raise
 
     # Step 4: Fill in hafele_login form
-    username_input = wait.until(EC.visibility_of_element_located((By.ID, "ShopLoginForm_Login_headerItemLogin")))
-    password_input = wait.until(EC.visibility_of_element_located((By.ID, "ShopLoginForm_Password_headerItemLogin")))
-    username_input.send_keys(username)
-    password_input.send_keys(password)
+    try:
+        # Try multiple possible selectors for username and password fields
+        username_selectors = [
+            (By.ID, "ShopLoginForm_Login_headerItemLogin"),
+            (By.NAME, "Login"),
+            (By.CSS_SELECTOR, "input[type='email'], input[type='text'][name*='login'], input[type='text'][name*='user']"),
+            (By.XPATH, "//input[@placeholder='E-posta' or @placeholder='Email' or @placeholder='Username']")
+        ]
+        
+        password_selectors = [
+            (By.ID, "ShopLoginForm_Password_headerItemLogin"),
+            (By.NAME, "Password"),
+            (By.CSS_SELECTOR, "input[type='password']"),
+            (By.XPATH, "//input[@placeholder='Şifre' or @placeholder='Password']")
+        ]
+        
+        username_input = None
+        password_input = None
+        
+        # Find username field
+        for selector_type, selector_value in username_selectors:
+            try:
+                print(f"🔍 Trying username selector: {selector_type} = {selector_value}")
+                username_input = WebDriverWait(driver, 5).until(
+                    EC.visibility_of_element_located((selector_type, selector_value))
+                )
+                print(f"✅ Found username field with selector: {selector_type} = {selector_value}")
+                break
+            except TimeoutException:
+                print(f"❌ Username selector failed: {selector_type} = {selector_value}")
+                continue
+        
+        # Find password field
+        for selector_type, selector_value in password_selectors:
+            try:
+                print(f"🔍 Trying password selector: {selector_type} = {selector_value}")
+                password_input = WebDriverWait(driver, 5).until(
+                    EC.visibility_of_element_located((selector_type, selector_value))
+                )
+                print(f"✅ Found password field with selector: {selector_type} = {selector_value}")
+                break
+            except TimeoutException:
+                print(f"❌ Password selector failed: {selector_type} = {selector_value}")
+                continue
+        
+        if username_input and password_input:
+            username_input.send_keys(username)
+            password_input.send_keys(password)
+        else:
+            print("❌ Could not find username or password fields")
+            driver.save_screenshot("login_form_debug.png")
+            print("📸 Login form screenshot saved as login_form_debug.png")
+            raise Exception("Login form fields not found")
+            
+    except Exception as e:
+        print(f"❌ Failed to fill login form: {e}")
+        driver.save_screenshot("login_form_error_debug.png")
+        print("📸 Login form error screenshot saved as login_form_error_debug.png")
+        raise
 
     # Step 5: Click 'Remember Me' checkbox (if found)
     try:

@@ -1,9 +1,12 @@
 import sys
 import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
+
 import pickle
 import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+import time
 
 # Add the root directory to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -23,32 +26,134 @@ from scraper.scraping_functions import (
     retrieve_product_data,
     extract_price_info,
     handle_singular_product,
-    does_product_exist
+    does_product_exist,
+    is_cookie_valid
 )
 
-
 from hafele_login import handle_login as hafele_login
+from core.config import Hafele_BASE_URL, Hafele_LOGIN_URL, Hafele_PRODUCT_API_PATH, Hafele_SEARCH_API_PATH
+
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 COOKIE_FILE = os.path.join(PROJECT_ROOT, "shared", "cookies.pkl")
-BASE_PRODUCT_URL = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
+BASE_PRODUCT_URL = f"{Hafele_BASE_URL}{Hafele_PRODUCT_API_PATH}"
+
+
+def validate_cookies(cookies):
+    """Test if cookies are valid by making a simple request to the site."""
+    if not cookies:
+        return False, "No cookies provided"
+    
+    try:
+        session = requests.Session()
+        
+        # Convert cookies to the format expected by requests
+        if isinstance(cookies, list):
+            for cookie in cookies:
+                session.cookies.set(cookie['name'], cookie['value'])
+        elif isinstance(cookies, dict):
+            session.cookies.update(cookies)
+        else:
+            return False, f"Invalid cookie format: {type(cookies)}"
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        
+        # Try to access a page that requires authentication
+        test_url = f"{Hafele_LOGIN_URL}/"
+        response = session.get(test_url, headers=headers, timeout=30)
+        
+        print(f"🔍 Cookie validation response status: {response.status_code}")
+        
+        # Check if we're redirected to login page (indicates invalid cookies)
+        if "login" in response.url.lower() or "giriş" in response.url.lower():
+            return False, "Redirected to login page - cookies are invalid"
+        
+        # Check for specific indicators of successful authentication
+        if "logout" in response.text.lower() or "çıkış" in response.text.lower():
+            return True, "Cookies appear to be valid"
+        
+        # Check for user-specific content
+        if "account" in response.text.lower() or "hesabım" in response.text.lower():
+            return True, "Cookies appear to be valid"
+            
+        return False, "Could not determine cookie validity"
+        
+    except Exception as e:
+        return False, f"Error validating cookies: {e}"
 
 
 def load_cookies():
-    driver = hafele_login.handle_login()
-    cookies = driver.get_cookies()
-    driver.quit()
+    try:
+        print("🔄 Starting login process...")
+        driver = hafele_login.handle_login()
+        cookies = driver.get_cookies()
+        driver.quit()
+        
+        print(f"✅ Successfully obtained {len(cookies)} cookies")
+        
+        # Validate the cookies immediately after obtaining them
+        is_valid, message = validate_cookies(cookies)
+        if not is_valid:
+            print(f"❌ Cookies are not valid: {message}")
+            return None
+        
+        print(f"✅ Cookies validated: {message}")
+        
+        # Save cookies
+        os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
+        with open(COOKIE_FILE, "wb") as file:
+            pickle.dump(cookies, file)
+        
+        print(f"💾 Cookies saved to {COOKIE_FILE}")
+        return cookies
+        
+    except Exception as e:
+        print(f"❌ Failed to load cookies: {e}")
+        print("🔍 Check the debug screenshots if they were created")
+        return None
 
-    os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
-    with open(COOKIE_FILE, "wb") as file:
-        pickle.dump(cookies, file)
 
-    return cookies
+def load_existing_cookies():
+    """Load existing cookies from file and validate them."""
+    try:
+        if not os.path.exists(COOKIE_FILE):
+            print("❌ Cookie file does not exist")
+            return None
+            
+        # Check if cookies are still valid (not expired)
+        if not is_cookie_valid(COOKIE_FILE, 600):  # 10 minutes expiry
+            print("⚠️ Cookies have expired")
+            return None
+            
+        with open(COOKIE_FILE, "rb") as file:
+            cookies = pickle.load(file)
+            
+        print(f"📂 Loaded {len(cookies)} cookies from file")
+        
+        # Validate the loaded cookies
+        is_valid, message = validate_cookies(cookies)
+        if not is_valid:
+            print(f"❌ Loaded cookies are not valid: {message}")
+            return None
+            
+        print(f"✅ Loaded cookies are valid: {message}")
+        return cookies
+        
+    except Exception as e:
+        print(f"❌ Error loading existing cookies: {e}")
+        return None
 
 
 def fetch_product_page(url, cookies):
     session = requests.Session()
-    for cookie in cookies:
-        session.cookies.set(cookie['name'], cookie['value'])
+    
+    # Convert cookies to the format expected by requests
+    if isinstance(cookies, list):
+        for cookie in cookies:
+            session.cookies.set(cookie['name'], cookie['value'])
+    elif isinstance(cookies, dict):
+        session.cookies.update(cookies)
 
     headers = {"User-Agent": "Mozilla/5.0"}
     response = session.get(url, headers=headers, timeout=30)
@@ -63,6 +168,12 @@ def fetch_product_page(url, cookies):
 def test_all_functions(product_code, cookies):
     print(f"\n🔍 Testing code: {product_code}")
 
+    # First, validate cookies before testing
+    is_valid, message = validate_cookies(cookies)
+    if not is_valid:
+        print(f"❌ Cannot test with invalid cookies: {message}")
+        return
+
     # Construct product data URL
     url = f"{BASE_PRODUCT_URL}?SKU={product_code.replace('.', '')}&ProductQuantity=20000"
 
@@ -76,6 +187,7 @@ def test_all_functions(product_code, cookies):
     # Fetch page HTML
     html = fetch_product_page(url, cookies)
     if not html:
+        print("❌ Could not fetch HTML for further testing")
         return
 
     soup = BeautifulSoup(html, "html.parser")
@@ -102,11 +214,30 @@ def test_all_functions(product_code, cookies):
         print("❌ does_product_exist error:", e)
 
 
-
 def main():
-    cookies = load_cookies()
+    # Check if Selenium service is running
+    try:
+        import requests
+        response = requests.get("http://localhost:4444/status", timeout=5)
+        if response.status_code == 200:
+            print("✅ Selenium service is running")
+        else:
+            print("⚠️ Selenium service responded with unexpected status")
+    except Exception as e:
+        print(f"❌ Selenium service is not running: {e}")
+        print("💡 Make sure to start the Selenium service with: docker-compose up selenium")
+        return
+    
+    # Try to load existing cookies first
+    cookies = load_existing_cookies()
+    
+    # If no valid existing cookies, perform login
     if not cookies:
-        print("❌ Failed to get cookies.")
+        print("🔄 No valid existing cookies found, performing login...")
+        cookies = load_cookies()
+        
+    if not cookies:
+        print("❌ Failed to get valid cookies.")
         return
 
     product_code = input("Enter a product code to test (e.g., 941.30.011): ").strip()
