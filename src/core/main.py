@@ -4,12 +4,9 @@ import pickle
 import pandas as pd
 from dotenv import load_dotenv
 import threading
-from datetime import datetime
 import time
-import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import random
-import requests
 import base64
 import json
 import re
@@ -24,9 +21,8 @@ load_dotenv()
 # Import project functions
 from scraper.scraping_functions import retrieve_product_data
 from scraper.send_mail import send_mail_without_excel, send_mail_with_excel
-from hafele_login.handle_login import handle_login
+from hafele_login import handle_login as hafele_login
 from core.config import *
-import random
 
 # Constants
 BASE_DIR = os.path.dirname(__file__)
@@ -37,31 +33,34 @@ COOKIE_FILE = os.path.join(ROOT_DIR, "shared", "cookies.pkl")
 BASE_PRODUCT_URL = f"{Hafele_BASE_URL}{Hafele_PRODUCT_API_PATH}"
 
 # Global state
-cookies = None
-cookie_lock = threading.Lock()
 progress_lock = threading.Lock()
+refresh_lock = threading.Lock()
 processed_count = 0
 total_count = 0
 rate_limit_errors = 0
 
 
-class CookieManager:
-    """Cookie manager with non-redundant, token-aware validation and caching."""
-    def __init__(self, max_sessions=MAX_SESSIONS):
-        self.max_sessions = max_sessions
-        self.cookie_sessions = []
-        self.session_lock = threading.Lock()
-        # Ensures only one thread performs a real refresh/login at a time
-        self.refresh_lock = threading.Lock()
+# -------------------- Cookie Manager --------------------
 
-        # Avoid redundant validation and add time safety margin
-        self.clock_skew_secs = 60           # refresh a bit before server cutoff
-        self.min_validation_gap_secs = 30   # don't recompute expiry more than this often
+class CookieManager:
+    """
+    Log in ONCE (single driver), open N tabs (per requirement), capture cookies,
+    quit driver, then reuse cookies with requests across threads.
+    Refresh only when clearly unauthorized or token likely expired.
+    """
+    def __init__(self, max_sessions=MAX_WORKERS):
+        self.max_sessions = max_sessions
+        self.cookie_sessions = []  # list of dicts: {'cookies': [...], 'last_used': ts, 'expires_at': ts}
+        self.session_lock = threading.Lock()
+
+        # small safety margin; but we avoid hard failing if missing expiries
+        self.clock_skew_secs = 30
+        # very light validation cadence
+        self.min_validation_gap_secs = 60
 
         self.initialize_sessions()
 
-    # -------------------- Helpers --------------------
-
+    # -------- helpers to parse/compute expiry (safe & conservative) --------
     def _get_cookie(self, cookies, name):
         if not cookies:
             return None
@@ -71,23 +70,24 @@ class CookieManager:
         return None
 
     def _safe_cookie_expiry_secs(self, cookie_dict):
-        """Return expiry as float seconds since epoch (UTC) if present and valid, else None."""
+        """Return expiry (UTC seconds) if meaningful; treat 0 as 'session cookie' => None."""
         if not cookie_dict:
             return None
         exp = cookie_dict.get("expiry") or cookie_dict.get("expires")
         try:
             if exp is None:
                 return None
-            return float(exp)
+            exp = float(exp)
+            if exp == 0:
+                return None
+            return exp
         except Exception:
             return None
 
     def _parse_api_token_internal_expiry_secs(self, cookies):
         """
-        apiToken cookie value is URL-encoded JSON with key 'apiToken'.
-        The 'apiToken' string contains pipe-separated parts; the middle Base64 chunk
-        typically includes a 13-digit ms epoch timestamp. We extract the largest 13-digit
-        number found and treat it as the internal expiry. Returns seconds (float) or None.
+        apiToken value is URL-encoded JSON with key 'apiToken'.
+        The middle Base64 token often contains a 13-digit ms epoch. Use the max 13-digit match.
         """
         try:
             api_cookie = self._get_cookie(cookies, "apiToken")
@@ -113,189 +113,158 @@ class CookieManager:
             decoded_bytes = base64.b64decode(middle_b64 + pad)
             decoded_txt = decoded_bytes.decode("utf-8", errors="ignore")
 
-            # Find 13-digit (ms) epochs and use the latest (most conservative)
             ms_candidates = re.findall(r"\b1\d{12}\b", decoded_txt)
             if not ms_candidates:
                 return None
 
             ms_epoch = max(int(x) for x in ms_candidates)
             return ms_epoch / 1000.0
-
         except Exception:
             return None
 
     def _recompute_session_expiry(self, session_dict):
         """
-        Compute and cache a single 'expires_at' on the session:
-        min(apiToken cookie expiry, apiToken internal expiry, SecureSessionID expiry).
-        Falls back to created_at + COOKIE_REFRESH_INTERVAL if none available.
+        Compute a single 'expires_at' using apiToken's browser expiry and payload expiry.
+        Fallback to created_at + COOKIE_REFRESH_INTERVAL if unavailable.
         """
         cookies = session_dict.get("cookies", [])
         now_ts = time.time()
         candidates = []
 
-        # External apiToken cookie expiry
         api_cookie = self._get_cookie(cookies, "apiToken")
         api_cookie_exp = self._safe_cookie_expiry_secs(api_cookie)
         if api_cookie_exp:
             candidates.append(api_cookie_exp)
 
-        # Internal expiry from apiToken payload
         api_internal_exp = self._parse_api_token_internal_expiry_secs(cookies)
         if api_internal_exp:
             candidates.append(api_internal_exp)
 
-        # Host session cookie expiry if present
-        secure_sess_cookie = None
-        for c in cookies or []:
-            nm = c.get("name", "")
-            if nm.startswith("__Host-SecureSessionID"):
-                secure_sess_cookie = c
-                break
-        secure_sess_exp = self._safe_cookie_expiry_secs(secure_sess_cookie)
-        if secure_sess_exp:
-            candidates.append(secure_sess_exp)
-
         if candidates:
             session_dict["expires_at"] = min(candidates)
         else:
+            # be permissive — if we can't parse, just set a refresh horizon window
             created_at = session_dict.get("created_at") or now_ts
             session_dict["expires_at"] = created_at + float(COOKIE_REFRESH_INTERVAL)
 
         session_dict["last_validated_at"] = now_ts
 
-    # -------------------- Lifecycle --------------------
-
+    # -------- lifecycle --------
     def initialize_sessions(self):
-        """Initialize cookie sessions with better error handling"""
-        print(f"🔄 Initializing {self.max_sessions} cookie sessions...")
+        """Login once, open N tabs (as required), capture cookies, quit driver, replicate to N sessions."""
+        print(f"🔄 Initializing {self.max_sessions} cookie sessions from a single login...")
 
-        # First, try to load existing cookies
-        if os.path.exists(COOKIE_FILE):
-            try:
-                with open(COOKIE_FILE, "rb") as f:
-                    existing_cookies = pickle.load(f)
-                self.cookie_sessions.append({
-                    'cookies': existing_cookies,
-                    'last_used': time.time(),
-                    'created_at': time.time(),
-                    'error_count': 0,
-                    'source': 'file'
-                })
-                # compute cached expiry once
-                self._recompute_session_expiry(self.cookie_sessions[-1])
-                print("✅ Loaded existing cookies from file")
-            except Exception as e:
-                print(f"⚠️ Failed to load existing cookies: {e}")
+        try:
+            driver = hafele_login.handle_login()  # returns logged-in driver (tab 1)
+            # Open additional tabs to satisfy the requirement (cookies are shared anyway)
+            for i in range(1, self.max_sessions):
+                driver.execute_script("window.open('https://www.hafele.com.tr/tr/', '_blank');")
+                # Switch to the new tab to ensure session is established server-side
+                driver.switch_to.window(driver.window_handles[i])
+                time.sleep(0.5)
 
-        # If we don't have enough sessions, try to create new ones
-        while len(self.cookie_sessions) < self.max_sessions:
+            # Return to first tab (optional)
+            driver.switch_to.window(driver.window_handles[0])
+            time.sleep(0.5)
+
+            # Grab cookies once (they are shared across tabs)
+            base_cookies = driver.get_cookies()
+
+            # Quit immediately — we only need cookies
             try:
-                print(f"🔄 Creating new session {len(self.cookie_sessions) + 1}...")
-                driver = handle_login()
-                session_cookies = driver.get_cookies()
                 driver.quit()
+            except Exception:
+                pass
 
-                self.cookie_sessions.append({
-                    'cookies': session_cookies,
+            # Create N logical sessions using the same cookie jar
+            for i in range(self.max_sessions):
+                sess = {
+                    'cookies': [dict(c) for c in base_cookies],  # shallow copy list of dicts
                     'last_used': time.time(),
                     'created_at': time.time(),
                     'error_count': 0,
-                    'source': 'new'
-                })
-                # compute cached expiry once
-                self._recompute_session_expiry(self.cookie_sessions[-1])
-                print(f"✅ Session {len(self.cookie_sessions)} created successfully")
+                    'source': f'login_copy_{i+1}'
+                }
+                self._recompute_session_expiry(sess)
+                self.cookie_sessions.append(sess)
 
-                # Save the new cookies
-                try:
-                    os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
-                    with open(COOKIE_FILE, "wb") as f:
-                        pickle.dump(session_cookies, f)
-                    print("💾 New cookies saved to file")
-                except Exception as e:
-                    print(f"⚠️ Failed to save cookies: {e}")
-
-                time.sleep(3)  # Delay between logins
-
+            # Persist for external tools if needed
+            try:
+                os.makedirs(os.path.dirname(COOKIE_FILE), exist_ok=True)
+                with open(COOKIE_FILE, "wb") as f:
+                    pickle.dump(base_cookies, f)
+                print("💾 Base cookies saved to file")
             except Exception as e:
-                print(f"❌ Failed to create session {len(self.cookie_sessions) + 1}: {e}")
-                break  # Stop trying if we can't create any more sessions
+                print(f"⚠️ Failed to save cookies: {e}")
 
-        if not self.cookie_sessions:
-            print("❌ No cookie sessions available")
-        else:
             print(f"✅ Cookie manager initialized with {len(self.cookie_sessions)} sessions")
 
-    def validate_session(self, session_dict):
-        """
-        Fast, non-redundant validator:
-        - Requires apiToken presence.
-        - Uses cached 'expires_at' unless it's stale (older than min_validation_gap_secs).
-        - Returns True if now + clock_skew < expires_at.
-        """
-        cookies = session_dict.get('cookies')
-        if not cookies:
-            return False
+        except Exception as e:
+            print(f"❌ Failed to initialize sessions: {e}")
 
-        # Require apiToken cookie presence (site's primary auth for API calls)
+    def _light_validate(self, session_dict):
+        """
+        Lightweight check: require apiToken present; consider expiry only if known and clearly past.
+        Do NOT aggressively invalidate — rely on on-demand refresh when a request fails.
+        """
+        cookies = session_dict.get('cookies') or []
         if not self._get_cookie(cookies, "apiToken"):
-            print("⚠️ No apiToken cookie present")
             return False
 
         now_ts = time.time()
-        last_val = session_dict.get("last_validated_at")
         expires_at = session_dict.get("expires_at")
+        last_val = session_dict.get("last_validated_at")
 
-        # If we have a recent validation and expiry cached, use it without recomputing
+        # Use cached decision if we validated very recently
         if last_val and expires_at and (now_ts - float(last_val) < self.min_validation_gap_secs):
-            return (now_ts + self.clock_skew_secs) < float(expires_at)
+            return (not expires_at) or ((now_ts + self.clock_skew_secs) < float(expires_at))
 
-        # Otherwise recompute once and cache
+        # Recompute once in a while
         self._recompute_session_expiry(session_dict)
         expires_at = session_dict.get("expires_at")
-        return (now_ts + self.clock_skew_secs) < float(expires_at) if expires_at else False
+        return (not expires_at) or ((now_ts + self.clock_skew_secs) < float(expires_at))
 
     def get_available_session(self):
-        """Get an available session with simplified, cached validation logic"""
+        """Pick the LRU session that passes the light check, else return the LRU anyway (we'll refresh on demand)."""
         with self.session_lock:
             if not self.cookie_sessions:
                 print("❌ No cookie sessions available")
                 return None
 
-            # Get the least recently used session
+            # Prefer one that passes light check
+            for session in sorted(self.cookie_sessions, key=lambda x: x['last_used']):
+                if self._light_validate(session):
+                    session['last_used'] = time.time()
+                    return session['cookies']
+
+            # If none pass light check, return LRU; the caller will trigger refresh if needed
             session = min(self.cookie_sessions, key=lambda x: x['last_used'])
-
-            # Validate quickly (cached). If invalid, refresh once.
-            if not self.validate_session(session):
-                print("🔄 Session invalid/expired, attempting refresh...")
-                if not self.refresh_session(session) or not self.validate_session(session):
-                    print("❌ Refresh failed or still invalid")
-                    return None
-
             session['last_used'] = time.time()
             return session['cookies']
 
-    def refresh_session(self, session):
-        """Refresh a session by creating a new login. Only one thread may refresh at a time."""
-        with self.refresh_lock:
+    def refresh_all_sessions(self):
+        """
+        Single new login; replace cookies in all sessions; recompute expiries.
+        Use a process-wide lock to avoid dogpiling.
+        """
+        with refresh_lock:
             try:
-                print("🔄 Refreshing session (locked)...")
-                driver = handle_login()
+                print("🔄 Performing global cookie refresh (single login)...")
+                driver = hafele_login.handle_login()
                 new_cookies = driver.get_cookies()
-                driver.quit()
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
 
-                session['cookies'] = new_cookies
-                session['error_count'] = 0
-                now_ts = time.time()
-                session['last_used'] = now_ts
-                session['created_at'] = now_ts
-                session['source'] = 'refreshed'
+                with self.session_lock:
+                    for sess in self.cookie_sessions:
+                        sess['cookies'] = [dict(c) for c in new_cookies]
+                        sess['created_at'] = time.time()
+                        sess['last_used'] = time.time()
+                        sess['error_count'] = 0
+                        self._recompute_session_expiry(sess)
 
-                # recompute and cache expiry for the new cookies
-                self._recompute_session_expiry(session)
-
-                # Save the refreshed cookies
                 try:
                     with open(COOKIE_FILE, "wb") as f:
                         pickle.dump(new_cookies, f)
@@ -303,86 +272,111 @@ class CookieManager:
                 except Exception as e:
                     print(f"⚠️ Failed to save refreshed cookies: {e}")
 
-                print("✅ Session refreshed successfully")
+                print("✅ Global cookie refresh complete")
                 return True
 
             except Exception as e:
-                print(f"❌ Failed to refresh session: {e}")
-                session['error_count'] += 1
+                print(f"❌ Global cookie refresh failed: {e}")
                 return False
 
-    def mark_session_error(self, cookies):
-        """Mark a session as having an error (used for rate-limit/backoff accounting)."""
-        with self.session_lock:
-            for session in self.cookie_sessions:
-                if session['cookies'] == cookies:
-                    session['error_count'] += 1
-                    print(f"⚠️ Session error count: {session['error_count']}")
 
-                    if session['error_count'] >= 2:  # Reduced threshold
-                        print("🔄 Too many errors, refreshing session...")
-                        self.refresh_session(session)
-                    break
-
-
-# Removed the old refresh_cookies function as it's now handled by CookieManager
-# Removed the old load_initial_cookies function as it's now handled by CookieManager
-
+# -------------------- Scraping helpers --------------------
 
 def parse_price(price_str):
-    """Parse price string to float"""
     if price_str is None:
         return None
-
-    # Clean the string
     cleaned = price_str.replace(".", "").replace(",", ".")
-
-    # Check if it's a valid float
     try:
         return float(cleaned)
     except ValueError:
         return None
 
 
-def process_product_with_rate_limiting(code, cookie_manager):
-    """Process a single product with rate limiting and error handling"""
+def looks_unauthorized(data_obj):
+    """
+    Heuristics to detect expired/invalid cookies:
+    - explicit redirect/login markers,
+    - empty critical fields,
+    - status-like fields.
+    """
+    if not isinstance(data_obj, dict):
+        return False
+    text_blob = json.dumps(data_obj).lower()
+    if "unauthorized" in text_blob or "yetkisiz" in text_blob:
+        return True
+    if "login" in text_blob or "giriş" in text_blob:
+        return True
+    # If site-specific marker exists (e.g., {"stok_durumu":"Unauthorized"}), catch it:
+    if data_obj.get("stok_durumu") in ("Unauthorized", "Forbidden", "Not logged in"):
+        return True
+    return False
+
+
+def hit_rate_limited(data_obj):
+    if not isinstance(data_obj, dict):
+        return False
+    sd = str(data_obj.get("stok_durumu", "")).lower()
+    return "rate limit" in sd or sd == "rate limit exceeded"
+
+
+def create_error_result(code, error_msg):
+    return {
+        "stock_code": code,
+        "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
+        "kdv_haric_net_fiyat": None,
+        "kdv_haric_satis_fiyati": None,
+        "stok_durumu": f"HATA: {error_msg}",
+        "stock_amount": None,
+        "minimum_alis_fiyati": None,
+        "minimum_alis_carpi_kdv_haric_satis": None,
+    }
+
+
+def process_product_with_resilience(code, cookie_manager):
+    """
+    Process a single product with resilience against:
+    - transient rate limits (retry with backoff),
+    - expired cookies (single global refresh).
+    """
     global processed_count, rate_limit_errors
 
     url = f"{BASE_PRODUCT_URL}?SKU={code.replace('.', '')}&ProductQuantity=20000"
 
-    # Add random delay to avoid rate limiting bursts across threads
-    time.sleep(REQUEST_DELAY + random.uniform(0, 1))
+    # jitter to avoid burst rate limiting across threads
+    time.sleep(REQUEST_DELAY + random.uniform(0, 0.8))
 
-    attempts = 0
-    while attempts <= MAX_RATE_LIMIT_RETRIES:
-        attempts += 1
+    retries = 0
+    did_global_refresh = False
 
-        # Get available cookie session (validated inside)
+    while retries <= MAX_RATE_LIMIT_RETRIES:
+        retries += 1
         session_cookies = cookie_manager.get_available_session()
         if not session_cookies:
-            print(f"❌ No available cookie sessions for {code}")
             return create_error_result(code, "No available cookie sessions")
 
         try:
-            data = retrieve_product_data(url, session_cookies)
+            data = retrieve_product_data(url=url, cookie_information=session_cookies)
 
-            # Check if we got rate limited
-            if data.get("stok_durumu") == "Rate limit exceeded" or "rate limit" in str(data).lower():
+            if hit_rate_limited(data):
                 rate_limit_errors += 1
-                cookie_manager.mark_session_error(session_cookies)
-                print(f"⚠️ Rate limit hit for {code}, attempt {attempts}/{MAX_RATE_LIMIT_RETRIES}. Retrying after delay...")
-                time.sleep(RATE_LIMIT_RETRY_DELAY)
+                # gentle backoff, don't refresh cookies for rate limit
+                time.sleep(RATE_LIMIT_RETRY_DELAY + random.uniform(0, 0.5))
                 continue
 
+            if looks_unauthorized(data):
+                if not did_global_refresh:
+                    did_global_refresh = cookie_manager.refresh_all_sessions()
+                    if did_global_refresh:
+                        # retry immediately with fresh cookies
+                        continue
+                # if refresh already done or failed:
+                return create_error_result(code, "Unauthorized after refresh")
+
+            # normal path
             satis_fiyati = parse_price(data.get("kdv_haric_satis_fiyati"))
             min_alis = data.get("minimum_alis_fiyati")
-
-            # Conditionally determine stock status
             raw_stok_durumu = data.get("stok_durumu")
-            if raw_stok_durumu is None or str(raw_stok_durumu).strip() == "":
-                stok_durumu = "Stok verisi yok"
-            else:
-                stok_durumu = raw_stok_durumu
+            stok_durumu = "Stok verisi yok" if (raw_stok_durumu is None or str(raw_stok_durumu).strip() == "") else raw_stok_durumu
 
             result = {
                 "stock_code": code,
@@ -399,71 +393,51 @@ def process_product_with_rate_limiting(code, cookie_manager):
                 )
             }
 
-            # Update progress
             with progress_lock:
+                global processed_count
                 processed_count += 1
                 print(f"✅ [{processed_count}/{total_count}] Completed: {code}")
 
             return result
 
         except Exception as e:
-            print(f"❌ Error processing product {code}: {e}")
-            cookie_manager.mark_session_error(session_cookies)
-            return create_error_result(code, str(e))
+            # network or parsing issue — back off and try again a bit
+            if retries <= MAX_RATE_LIMIT_RETRIES:
+                time.sleep(RATE_LIMIT_RETRY_DELAY + random.uniform(0, 0.5))
+                continue
+            return create_error_result(code, f"Exception: {e}")
 
-    # If we exhausted retries due to rate limiting
-    return create_error_result(code, "Exceeded max retries due to rate limiting")
-
-
-def create_error_result(code, error_msg):
-    """Create a standardized error result"""
-    return {
-        "stock_code": code,
-        "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
-        "kdv_haric_net_fiyat": None,
-        "kdv_haric_satis_fiyati": None,
-        "stok_durumu": f"HATA: {error_msg}",
-        "stock_amount": None,
-        "minimum_alis_fiyati": None,
-        "minimum_alis_carpi_kdv_haric_satis": None,
-    }
+    return create_error_result(code, "Exceeded max retries")
 
 
 def process_batch(product_batch, cookie_manager):
-    """Process a batch of products using ThreadPoolExecutor"""
     results = []
-
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # Submit all products in the batch
         future_to_code = {
-            executor.submit(process_product_with_rate_limiting, code, cookie_manager): code
+            executor.submit(process_product_with_resilience, code, cookie_manager): code
             for code in product_batch
         }
-
-        # Collect results as they complete
         for future in as_completed(future_to_code):
             code = future_to_code[future]
             try:
                 result = future.result()
                 results.append(result)
             except Exception as e:
-                print(f"❌ Exception for {code}: {e}")
-                results.append(create_error_result(code, str(e)))
-
+                results.append(create_error_result(code, f"Exception in future: {e}"))
     return results
 
 
+# -------------------- Main --------------------
+
 def main():
-    global processed_count, total_count
+    global processed_count, total_count, rate_limit_errors
 
     informal_mail = os.getenv("informal_mail")
     try:
         st = time.time()
 
-        # Initialize cookie manager for multithreading
+        # Initialize cookie manager: one login, open 5 tabs, quit driver, reuse cookies
         cookie_manager = CookieManager(max_sessions=MAX_WORKERS)
-
-        # Check if we have any working sessions
         if not cookie_manager.cookie_sessions:
             print("❌ No cookie sessions available. Cannot proceed with scraping.")
             return
@@ -479,7 +453,6 @@ def main():
 
         all_results = []
 
-        # Process products in batches
         for i in range(0, len(codes), BATCH_SIZE):
             batch = codes[i:i + BATCH_SIZE]
             batch_num = (i // BATCH_SIZE) + 1
@@ -489,27 +462,21 @@ def main():
             batch_results = process_batch(batch, cookie_manager)
             all_results.extend(batch_results)
 
-            # Progress update
             progress = (len(all_results) / total_count) * 100
             print(f"📊 Overall progress: {progress:.1f}% ({len(all_results)}/{total_count})")
 
-            # Rate limit monitoring
             if rate_limit_errors > 0:
                 print(f"⚠️ Rate limit errors so far: {rate_limit_errors}")
 
-            # Small delay between batches
             if i + BATCH_SIZE < len(codes):
-                print("⏳ Waiting between batches...")
                 time.sleep(BATCH_DELAY)
 
         df_out = pd.DataFrame(all_results)
+        os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
         df_out.to_excel(OUTPUT_FILE, index=False)
         print(f"\n✅ Done. Saved results to {OUTPUT_FILE}")
-        # Send completion email
-        # send_mail_without_excel(informal_mail, content="Web kazima islemi basariyla tamamlandi")
+
         send_mail_with_excel(informal_mail, OUTPUT_FILE)
-        # send_mail_with_excel(os.getenv("gmail_receiver_email"), OUTPUT_FILE)
-        # send_mail_with_excel(os.getenv("gmail_receiver_email_2"), OUTPUT_FILE)
 
         et = time.time()
         duration = round((et - st) / 60, 2)
@@ -517,10 +484,14 @@ def main():
         print(f"Rate limit errors encountered: {rate_limit_errors}")
 
     except Exception as e:
-        send_mail_without_excel(
-            informal_mail,
-            content=f"Web kazima islemi hata verdi. Hicbir urunun verisi elde edinemedi. Hata: {e}"
-        )
+        try:
+            send_mail_without_excel(
+                informal_mail,
+                content=f"Web kazima islemi hata verdi. Hicbir urunun verisi elde edinemedi. Hata: {e}"
+            )
+        except Exception:
+            pass
+        print(f"❌ Fatal error: {e}")
 
 
 if __name__ == "__main__":
