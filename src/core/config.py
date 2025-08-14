@@ -3,14 +3,15 @@ import os
 # Multithreading and Rate Limiting Configuration
 
 # Threading Configuration
-MAX_WORKERS = 1  # Reduced to avoid Selenium session conflicts
-BATCH_SIZE = 25  # Smaller batches to reduce load
-REQUEST_DELAY = 1.5  # Base delay between requests in seconds
-BATCH_DELAY = 5  # Delay between batches in seconds
+# Tune MAX_WORKERS based on your infra; 4-8 is typical for I/O-bound scraping
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "5"))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "25"))
+REQUEST_DELAY = float(os.getenv("REQUEST_DELAY", "0.5"))  # Base delay between requests in seconds
+BATCH_DELAY = float(os.getenv("BATCH_DELAY", "1"))  # Delay between batches in seconds
 
 # Cookie Management
-COOKIE_REFRESH_INTERVAL = 600  # Cookie refresh interval in seconds (10 minutes)
-MAX_SESSIONS = 1  # Single session to avoid conflicts
+COOKIE_REFRESH_INTERVAL = int(os.getenv("COOKIE_REFRESH_INTERVAL", "600"))  # seconds (10 minutes)
+MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", str(max(1, int(os.getenv("MAX_WORKERS", "5"))))))
 
 # Rate Limiting
 RATE_LIMIT_RETRY_DELAY = 30  # Wait time when rate limited (seconds)

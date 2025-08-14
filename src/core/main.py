@@ -48,6 +48,8 @@ class CookieManager:
         self.max_sessions = max_sessions
         self.cookie_sessions = []
         self.session_lock = threading.Lock()
+        # Ensures only one thread performs a real refresh/login at a time
+        self.refresh_lock = threading.Lock()
         self.initialize_sessions()
     
     def initialize_sessions(self):
@@ -62,6 +64,7 @@ class CookieManager:
                 self.cookie_sessions.append({
                     'cookies': existing_cookies,
                     'last_used': time.time(),
+                    'created_at': time.time(),
                     'error_count': 0,
                     'source': 'file'
                 })
@@ -80,6 +83,7 @@ class CookieManager:
                 self.cookie_sessions.append({
                     'cookies': session_cookies,
                     'last_used': time.time(),
+                    'created_at': time.time(),
                     'error_count': 0,
                     'source': 'new'
                 })
@@ -105,22 +109,40 @@ class CookieManager:
         else:
             print(f"✅ Cookie manager initialized with {len(self.cookie_sessions)} sessions")
     
-    def validate_session(self, cookies):
-        """Simplified session validation - just check if cookies exist and have values"""
+    def validate_session(self, session_dict):
+        """Validate that a session looks usable before issuing requests.
+
+        Rules:
+        - Must contain at least one essential cookie name
+        - No cookie with an expiry in the past
+        - Age must be within configured refresh interval
+        """
+        cookies = session_dict.get('cookies')
         if not cookies:
             return False
-        
-        # Check if we have essential cookies
+
         essential_cookies = ['JSESSIONID', 'BIGipServer', 'ASP.NET_SessionId']
         cookie_names = [cookie.get('name', '') for cookie in cookies]
-        
-        # If we have any essential cookies, consider it valid
-        has_essential = any(name in cookie_names for name in essential_cookies)
-        
-        if not has_essential:
+        if not any(name in cookie_names for name in essential_cookies):
             print("⚠️ No essential cookies found in session")
             return False
-        
+
+        now_ts = time.time()
+        for cookie in cookies:
+            try:
+                expiry = cookie.get('expiry') or cookie.get('expires')
+                if expiry is not None and float(expiry) <= now_ts:
+                    print(f"⚠️ Cookie expired: {cookie.get('name')}")
+                    return False
+            except Exception:
+                # Ignore malformed expiry fields
+                continue
+
+        created_at = session_dict.get('created_at') or session_dict.get('last_used') or now_ts
+        if (now_ts - created_at) >= COOKIE_REFRESH_INTERVAL:
+            print("ℹ️ Session age exceeded refresh interval")
+            return False
+
         return True
 
     def get_available_session(self):
@@ -132,9 +154,9 @@ class CookieManager:
             
             # Get the least recently used session
             session = min(self.cookie_sessions, key=lambda x: x['last_used'])
-            
-            # Simple validation - just check if cookies exist
-            if not self.validate_session(session['cookies']):
+
+            # Validate; if invalid, refresh under a process-wide refresh lock
+            if not self.validate_session(session):
                 print("🔄 Session validation failed, trying to refresh...")
                 if not self.refresh_session(session):
                     return None
@@ -143,33 +165,40 @@ class CookieManager:
             return session['cookies']
     
     def refresh_session(self, session):
-        """Refresh a session by creating a new login"""
-        try:
-            print("🔄 Refreshing session...")
-            driver = handle_login()
-            new_cookies = driver.get_cookies()
-            driver.quit()
-            
-            session['cookies'] = new_cookies
-            session['error_count'] = 0
-            session['last_used'] = time.time()
-            session['source'] = 'refreshed'
-            
-            # Save the refreshed cookies
+        """Refresh a session by creating a new login.
+
+        Only one thread may perform a refresh at a time across the process.
+        """
+        # Fast-path: if another thread refreshed while we were waiting, skip
+        with self.refresh_lock:
             try:
-                with open(COOKIE_FILE, "wb") as f:
-                    pickle.dump(new_cookies, f)
-                print("💾 Refreshed cookies saved to file")
+                print("🔄 Refreshing session (locked)...")
+                driver = handle_login()
+                new_cookies = driver.get_cookies()
+                driver.quit()
+
+                session['cookies'] = new_cookies
+                session['error_count'] = 0
+                now_ts = time.time()
+                session['last_used'] = now_ts
+                session['created_at'] = now_ts
+                session['source'] = 'refreshed'
+
+                # Save the refreshed cookies
+                try:
+                    with open(COOKIE_FILE, "wb") as f:
+                        pickle.dump(new_cookies, f)
+                    print("💾 Refreshed cookies saved to file")
+                except Exception as e:
+                    print(f"⚠️ Failed to save refreshed cookies: {e}")
+
+                print("✅ Session refreshed successfully")
+                return True
+
             except Exception as e:
-                print(f"⚠️ Failed to save refreshed cookies: {e}")
-            
-            print("✅ Session refreshed successfully")
-            return True
-            
-        except Exception as e:
-            print(f"❌ Failed to refresh session: {e}")
-            session['error_count'] += 1
-            return False
+                print(f"❌ Failed to refresh session: {e}")
+                session['error_count'] += 1
+                return False
     
     def mark_session_error(self, cookies):
         """Mark a session as having an error"""
@@ -209,65 +238,72 @@ def parse_price(price_str):
 def process_product_with_rate_limiting(code, cookie_manager):
     """Process a single product with rate limiting and error handling"""
     global processed_count, rate_limit_errors
-    
+
     url = f"{BASE_PRODUCT_URL}?SKU={code.replace('.', '')}&ProductQuantity=20000"
-    
-    # Get available cookie session
-    session_cookies = cookie_manager.get_available_session()
-    if not session_cookies:
-        print(f"❌ No available cookie sessions for {code}")
-        return create_error_result(code, "No available cookie sessions")
-    
-    # Add random delay to avoid rate limiting
+
+    # Add random delay to avoid rate limiting bursts across threads
     time.sleep(REQUEST_DELAY + random.uniform(0, 1))
-    
-    try:
-        data = retrieve_product_data(url, session_cookies)
-        
-        # Check if we got rate limited
-        if data.get("stok_durumu") == "Rate limit exceeded" or "rate limit" in str(data).lower():
-            rate_limit_errors += 1
+
+    attempts = 0
+    while attempts <= MAX_RATE_LIMIT_RETRIES:
+        attempts += 1
+
+        # Get available cookie session (validated inside)
+        session_cookies = cookie_manager.get_available_session()
+        if not session_cookies:
+            print(f"❌ No available cookie sessions for {code}")
+            return create_error_result(code, "No available cookie sessions")
+
+        try:
+            data = retrieve_product_data(url, session_cookies)
+
+            # Check if we got rate limited
+            if data.get("stok_durumu") == "Rate limit exceeded" or "rate limit" in str(data).lower():
+                rate_limit_errors += 1
+                cookie_manager.mark_session_error(session_cookies)
+                print(f"⚠️ Rate limit hit for {code}, attempt {attempts}/{MAX_RATE_LIMIT_RETRIES}. Retrying after delay...")
+                time.sleep(RATE_LIMIT_RETRY_DELAY)
+                continue
+
+            satis_fiyati = parse_price(data.get("kdv_haric_satis_fiyati"))
+            min_alis = data.get("minimum_alis_fiyati")
+
+            # Conditionally determine stock status
+            raw_stok_durumu = data.get("stok_durumu")
+            if raw_stok_durumu is None or str(raw_stok_durumu).strip() == "":
+                stok_durumu = "Stok verisi yok"
+            else:
+                stok_durumu = raw_stok_durumu
+
+            result = {
+                "stock_code": code,
+                "kdv_haric_tavsiye_edilen_perakende_fiyat": data.get("kdv_haric_tavsiye_edilen_perakende_fiyat"),
+                "kdv_haric_net_fiyat": data.get("kdv_haric_net_fiyat"),
+                "kdv_haric_satis_fiyati": data.get("kdv_haric_satis_fiyati"),
+                "stok_durumu": stok_durumu,
+                "stock_amount": data.get("stock_amount"),
+                "minimum_alis_fiyati": data.get("minimum_alis_fiyati"),
+                "minimum_alis_carpi_kdv_haric_satis": (
+                    satis_fiyati * int(min_alis)
+                    if satis_fiyati is not None and min_alis is not None
+                    else None
+                )
+            }
+
+            # Update progress
+            with progress_lock:
+                processed_count += 1
+                print(f"✅ [{processed_count}/{total_count}] Completed: {code}")
+
+            return result
+
+        except Exception as e:
+            print(f"❌ Error processing product {code}: {e}")
             cookie_manager.mark_session_error(session_cookies)
-            print(f"⚠️ Rate limit hit for {code}, retrying with delay...")
-            time.sleep(RATE_LIMIT_RETRY_DELAY)
-            return process_product_with_rate_limiting(code, cookie_manager)
-        
-        satis_fiyati = parse_price(data.get("kdv_haric_satis_fiyati"))
-        min_alis = data.get("minimum_alis_fiyati")
-        
-        # Conditionally determine stock status
-        raw_stok_durumu = data.get("stok_durumu")
-        if raw_stok_durumu is None or str(raw_stok_durumu).strip() == "":
-            stok_durumu = "Stok verisi yok"
-        else:
-            stok_durumu = raw_stok_durumu
-        
-        result = {
-            "stock_code": code,
-            "kdv_haric_tavsiye_edilen_perakende_fiyat": data.get("kdv_haric_tavsiye_edilen_perakende_fiyat"),
-            "kdv_haric_net_fiyat": data.get("kdv_haric_net_fiyat"),
-            "kdv_haric_satis_fiyati": data.get("kdv_haric_satis_fiyati"),
-            "stok_durumu": stok_durumu,
-            "stock_amount": data.get("stock_amount"),
-            "minimum_alis_fiyati": data.get("minimum_alis_fiyati"),
-            "minimum_alis_carpi_kdv_haric_satis": (
-                satis_fiyati * int(min_alis)
-                if satis_fiyati is not None and min_alis is not None
-                else None
-            )
-        }
-        
-        # Update progress
-        with progress_lock:
-            processed_count += 1
-            print(f"✅ [{processed_count}/{total_count}] Completed: {code}")
-        
-        return result
-        
-    except Exception as e:
-        print(f"❌ Error processing product {code}: {e}")
-        cookie_manager.mark_session_error(session_cookies)
-        return create_error_result(code, str(e))
+            return create_error_result(code, str(e))
+
+    # If we exhausted retries due to rate limiting
+    return create_error_result(code, "Exceeded max retries due to rate limiting")
 
 
 def create_error_result(code, error_msg):
