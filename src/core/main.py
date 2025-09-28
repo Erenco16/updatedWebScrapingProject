@@ -433,6 +433,7 @@ def main():
     global processed_count, total_count, rate_limit_errors
 
     informal_mail = os.getenv("informal_mail")
+    excel_mail = os.getenv("gmail_receiver_email")
     try:
         st = time.time()
 
@@ -476,7 +477,8 @@ def main():
         df_out.to_excel(OUTPUT_FILE, index=False)
         print(f"\n✅ Done. Saved results to {OUTPUT_FILE}")
 
-        send_mail_with_excel(informal_mail, OUTPUT_FILE)
+        send_mail_without_excel(recipient_email=informal_mail)
+        send_mail_with_excel(excel_mail, OUTPUT_FILE)
 
         et = time.time()
         duration = round((et - st) / 60, 2)
