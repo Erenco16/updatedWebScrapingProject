@@ -1,55 +1,52 @@
 services:
-  auth_service:
-    build:
-      context: .
-      dockerfile: Dockerfile.auth
-    container_name: auth_service
-    ports:
-      - "5001:5001"
-    env_file:
-      - .env
-    volumes:
-      - ./src/input:/app/src/input
-    command: [ "/bin/sh", "-c", "chmod +x /app/src/input/start.sh && /app/src/input/start.sh" ]
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://127.0.0.1:5001/health" ]
-      interval: 10s
-      retries: 5
-      start_period: 20s
-      timeout: 5s
+  # auth_service:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.auth
+  #   container_name: auth_service
+  #   ports:
+  #     - "5001:5001"
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./src/input:/app/src/input
+  #   command: [ "/bin/sh", "-c", "chmod +x /app/src/input/start.sh && /app/src/input/start.sh" ]
+  #   healthcheck:
+  #     test: [ "CMD", "curl", "-f", "http://127.0.0.1:5001/health" ]
+  #     interval: 10s
+  #     retries: 5
+  #     start_period: 20s
+  #     timeout: 5s
 
-  request_operations:
-      build:
-        context: .
-        dockerfile: Dockerfile.auth
-      container_name: request_operations
-      depends_on:
-        auth_service:
-          condition: service_healthy
-      env_file:
-        - .env
-      volumes:
-        - ./src/input:/app/src/input
-      command: [ "python", "-u", "/app/src/input/api.py" ]
+  # request_operations:
+  #     build:
+  #       context: .
+  #       dockerfile: Dockerfile.auth
+  #     container_name: request_operations
+  #     depends_on:
+  #       auth_service:
+  #         condition: service_healthy
+  #     env_file:
+  #       - .env
+  #     volumes:
+  #       - ./src/input:/app/src/input
+  #     command: [ "python", "-u", "/app/src/input/api.py" ]
 
-  shutdown_auth:
-      image: docker:latest
-      container_name: shutdown_auth
-      depends_on:
-        request_operations:
-          condition: service_completed_successfully
-      volumes:
-        - /var/run/docker.sock:/var/run/docker.sock
-      command: [ "sh", "-c", "docker stop auth_service" ]
+  # shutdown_auth:
+  #     image: docker:latest
+  #     container_name: shutdown_auth
+  #     depends_on:
+  #       request_operations:
+  #         condition: service_completed_successfully
+  #     volumes:
+  #       - /var/run/docker.sock:/var/run/docker.sock
+  #     command: [ "sh", "-c", "docker stop auth_service" ]
 
   selenium-hub:
     image: seleniarm/hub:latest
     container_name: selenium-hub
     ports:
       - "4444:4444"
-    depends_on:
-      request_operations:
-        condition: service_completed_successfully
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:4444/status" ]
       interval: 5s
@@ -74,8 +71,6 @@ services:
         dockerfile: Dockerfile
       container_name: webscrape
       depends_on:
-        request_operations:
-          condition: service_completed_successfully
         selenium-hub:
           condition: service_healthy
         chrome:
