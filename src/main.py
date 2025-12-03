@@ -6,7 +6,7 @@ import pandas as pd
 import time
 import os
 from dotenv import load_dotenv
-from send_mail import send_mail_with_excel
+from send_mail import send_mail_with_excel, send_mail
 import random
 import threading
 
@@ -217,57 +217,107 @@ def is_cookie_valid(cookie_file, expiry_time):
     )
 
 def main():
-    global cookies
+    global cookies, stop_refreshing
+    informal_mail = os.getenv("informal_mail")
+    
+    try:
+        # Send scrape started email
+        send_mail(
+            informal_mail,
+            subject="🚀 Hafele Web Scraping Started",
+            body="The Hafele web scraping process has started. You will receive another email when it completes."
+        )
+    except Exception as e:
+        print(f"❌ Error sending start email: {e}")
+    
     login_thread = threading.Thread(target=refresh_login, daemon=True)
     login_thread.start()
 
-    if os.path.exists(COOKIE_FILE):
-        print("\n✅ Cookies file found. Loading cookies...\n")
-        cookies = load_cookies(COOKIE_FILE)
-    else:
-        print("\n❌ No cookies file found. Logging in to create cookies...\n")
-        driver = login.handle_login()
-        driver.quit()
-        cookies = load_cookies(COOKIE_FILE)
-
-    if cookies is None or not cookies:
-        print("⚠️ Warning: Cookies are empty. Login might have failed!")
-        return
-
-    df = pd.read_excel(INPUT_FILE)
-    stock_codes = df["stockCode"].tolist()
-    base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
-    product_urls = [(f"{base_url}?SKU={code.replace('.', '')}&ProductQuantity=20000", code) for code in stock_codes]
-
-    results = []
-    for url, code in product_urls:
-        try:
-            print(f"Scraping data for stock code {code}...")
-            result = retrieve_product_data(url=url, code=code, cookie_information=cookies)
-            result["stockCode"] = code
-            results.append(result)
-        except Exception as e:
-            print(f"Error processing stock code {code}: {e}")
-            results.append({"stockCode": code, "stok_durumu": f"Error: {e}", "stock_amount": None})
-
-    if os.path.exists(OUTPUT_FILE):
-        os.remove(OUTPUT_FILE)
-
-    output_data = pd.DataFrame(results)
-    output_data.to_excel(OUTPUT_FILE, index=False)
-    print(f"✅ Results saved to {OUTPUT_FILE}")
-
-    email = os.getenv("gmail_receiver_email_2")
-    email_2 = os.getenv("gmail_receiver_email")
-  
     try:
-        send_mail_with_excel(email, OUTPUT_FILE)
-        send_mail_with_excel(email_2, OUTPUT_FILE)
-        print(f"📧 Email sent to {email} and {email_2}")
-    except Exception as e:
-        print(f"❌ Error sending email: {e}")
+        if os.path.exists(COOKIE_FILE):
+            print("\n✅ Cookies file found. Loading cookies...\n")
+            cookies = load_cookies(COOKIE_FILE)
+        else:
+            print("\n❌ No cookies file found. Logging in to create cookies...\n")
+            driver = login.handle_login()
+            driver.quit()
+            cookies = load_cookies(COOKIE_FILE)
 
-    print(f"\n✅ Scraping complete. Process will exit now.\n")
+        if cookies is None or not cookies:
+            print("⚠️ Warning: Cookies are empty. Login might have failed!")
+            error_body = "The Hafele web scraping process failed: Cookies are empty. Login might have failed!"
+            try:
+                send_mail(
+                    informal_mail,
+                    subject="❌ Hafele Web Scraping Failed",
+                    body=error_body
+                )
+            except Exception as e:
+                print(f"❌ Error sending error email: {e}")
+            return
+
+        df = pd.read_excel(INPUT_FILE)
+        stock_codes = df["stockCode"].tolist()
+        base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
+        product_urls = [(f"{base_url}?SKU={code.replace('.', '')}&ProductQuantity=20000", code) for code in stock_codes]
+
+        results = []
+        for url, code in product_urls:
+            try:
+                print(f"Scraping data for stock code {code}...")
+                result = retrieve_product_data(url=url, code=code, cookie_information=cookies)
+                result["stockCode"] = code
+                results.append(result)
+            except Exception as e:
+                print(f"Error processing stock code {code}: {e}")
+                results.append({"stockCode": code, "stok_durumu": f"Error: {e}", "stock_amount": None})
+
+        if os.path.exists(OUTPUT_FILE):
+            os.remove(OUTPUT_FILE)
+
+        output_data = pd.DataFrame(results)
+        output_data.to_excel(OUTPUT_FILE, index=False)
+        print(f"✅ Results saved to {OUTPUT_FILE}")
+
+        email = os.getenv("gmail_receiver_email_2")
+        email_2 = os.getenv("gmail_receiver_email")
+      
+        try:
+            send_mail_with_excel(email, OUTPUT_FILE)
+            send_mail_with_excel(email_2, OUTPUT_FILE)
+            print(f"📧 Email sent to {email} and {email_2}")
+        except Exception as e:
+            print(f"❌ Error sending email: {e}")
+
+        # Send scrape finished email
+        try:
+            send_mail(
+                informal_mail,
+                subject="✅ Hafele Web Scraping Completed",
+                body="The Hafele web scraping process has completed successfully. Results have been saved and sent to the recipients."
+            )
+        except Exception as e:
+            print(f"❌ Error sending completion email: {e}")
+
+        print(f"\n✅ Scraping complete. Process will exit now.\n")
+    
+    except Exception as e:
+        # Send error email with exception message
+        error_body = f"The Hafele web scraping process encountered an error:\n\nException: {str(e)}"
+        try:
+            send_mail(
+                informal_mail,
+                subject="❌ Hafele Web Scraping Failed",
+                body=error_body
+            )
+        except Exception as email_error:
+            print(f"❌ Error sending error email: {email_error}")
+        
+        print(f"❌ Error during scraping: {e}")
+        raise
+    finally:
+        # Stop the refresh login thread
+        stop_refreshing = True
 
 if __name__ == "__main__":
     main()
