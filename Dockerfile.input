@@ -6,9 +6,9 @@ WORKDIR /app
 # Ensure the ChromeDriver binary is in the default PATH
 RUN ln -s /usr/bin/chromium-driver /usr/local/bin/chromedriver
 
-# Copy requirements and install dependencies (place into /app where WORKDIR is set)
-COPY requirements.txt /app/
-RUN pip install --no-cache-dir -r /app/requirements.txt
+# Copy requirements and install dependencies (place into WORKDIR so pip can find it)
+COPY requirements.txt /app/src/input/
+RUN pip install --no-cache-dir -r /app/src/input/requirements.txt
 
 # Copy only the `src/` directory contents into `/app/src/`
 COPY src/ /app/src/
@@ -22,4 +22,4 @@ ENV PYTHONUNBUFFERED=1
 ENV webdriver.chrome.driver="/usr/bin/chromedriver"
 
 # Run the application as module so package imports work
-CMD ["bash", "/wait-for-it.sh", "selenium-hub", "4444", "--", "python", "-m", "src.main"]
+CMD ["bash", "/wait-for-it.sh", "selenium-hub", "4444", "--", "python", "-m", "src.input.send_product_code_mail"]
