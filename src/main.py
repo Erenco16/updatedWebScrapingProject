@@ -283,8 +283,8 @@ def main():
         email_2 = os.getenv("gmail_receiver_email")
       
         try:
-            # send_mail_with_excel(email, OUTPUT_FILE)
-            # send_mail_with_excel(email_2, OUTPUT_FILE)
+            send_mail_with_excel(email, OUTPUT_FILE)
+            send_mail_with_excel(email_2, OUTPUT_FILE)
             print(f"📧 Email sent to {email} and {email_2}")
         except Exception as e:
             print(f"❌ Error sending email: {e}")
