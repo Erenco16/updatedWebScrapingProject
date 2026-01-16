@@ -420,7 +420,8 @@ def main():
             return
 
         df = pd.read_excel(INPUT_FILE)
-        stock_codes = df["stockCode"].tolist()
+        # stock_codes = df["stockCode"].tolist()
+        stock_codes = df["stockCode"].dropna().sample(n=200, random_state=42).tolist()
         base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
         product_urls = [(f"{base_url}?SKU={code.replace('.', '')}&ProductQuantity=20000", code) for code in stock_codes]
 

@@ -165,4 +165,3 @@ cython_debug/
 /src/tests/session_info.json
 /src/tests/user_agent.txt
 /src/input/token.json
-/src/input/attachments/
