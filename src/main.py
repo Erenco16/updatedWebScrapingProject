@@ -454,7 +454,7 @@ def main():
         try:
             send_mail_with_excel(email, OUTPUT_FILE)
             send_mail_with_excel(email_2, OUTPUT_FILE)
-            send_mail_with_excel(informal_mail, OUTPUT_FILE)
+
             print(f"📧 Email sent to {email} and {email_2}")
         except Exception as e:
             print(f"❌ Error sending email: {e}")
