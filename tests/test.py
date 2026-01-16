@@ -13,15 +13,16 @@ from selenium.webdriver.chrome.options import Options
 # Load environment variables
 load_dotenv()
 
-# Add the src directory to sys.path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
+# Add the parent directory to sys.path so we can import src
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Import main functions for testing
 from src.main import (
     handle_singular_product,
     retrieve_product_data,
     extract_price_info,
-    does_product_exist
+    does_product_exist,
+    extract_product_description
 )
 
 # Constants
@@ -125,6 +126,35 @@ def fetch_product_page(url, cookies):
         return None
 
 
+def fetch_product_page_with_headers(url, cookies):
+    """Fetch the product page HTML with full headers matching browser request."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Accept-Language": "en-GB,en;q=0.9",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "Upgrade-Insecure-Requests": "1"
+    }
+    session = requests.Session()
+
+    for cookie in cookies:
+        session.cookies.set(cookie['name'], cookie['value'])
+
+    try:
+        response = session.get(url, headers=headers, timeout=60)
+        if response.status_code == 200:
+            print(f"✅ Product page fetched successfully from: {url}")
+            return response.text
+        else:
+            print(f"❌ Failed to fetch product page. HTTP Status: {response.status_code}")
+            return None
+    except requests.RequestException as e:
+        print(f"❌ Request error: {e}")
+        return None
+
+
 def test_handle_singular_product(soup):
     """Test the `handle_singular_product()` function."""
     print("\nTesting handle_singular_product()...")
@@ -145,14 +175,69 @@ def test_extract_price_info(soup):
         print(f"Error in extract_price_info: {e}")
 
 
+def test_extract_product_description(soup):
+    """Test the `extract_product_description()` function."""
+    print("\nTesting extract_product_description()...")
+    try:
+        result = extract_product_description(soup)
+        if result and result != "No description available":
+            # Check if it's valid HTML
+            if "<!DOCTYPE html>" in result and "<html" in result:
+                print("✅ Product description HTML generated successfully")
+                print(f"   - HTML length: {len(result)} characters")
+                # Check for key HTML elements
+                if "product-description-container" in result:
+                    print("   - Contains product-description-container")
+                if "property-section" in result:
+                    print("   - Contains property sections")
+                if "Ürün Özellikleri" in result:
+                    print("   - Contains Turkish header")
+                print(f"   - First 200 chars: {result[:200]}...")
+            else:
+                print("⚠️ Result is not valid HTML")
+                print(f"   Result: {result[:200]}...")
+        else:
+            print(f"⚠️ No description available: {result}")
+    except Exception as e:
+        print(f"Error in extract_product_description: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 def test_does_product_exist(code, cookies):
     """Test the `does_product_exist()` function."""
     print("\nTesting does_product_exist()...")
     try:
-        result = does_product_exist(code=code, cookies=cookies)
-        print(f"Product exists: {result}")
+        exists, search_soup = does_product_exist(code=code, cookies=cookies)
+        print(f"✅ Product exists: {exists}")
+        
+        # Print relevant information from the search results page
+        if search_soup:
+            print(f"\n📄 Search Results Page HTML Preview:")
+            print(f"   - Page title: {search_soup.title.string if search_soup.title else 'N/A'}")
+            
+            # Look for product count or search results info
+            search_info = search_soup.find("p", class_="headlineStyle4")
+            if search_info:
+                print(f"   - Search info: {search_info.get_text(strip=True)[:200]}...")
+            
+            # Check for products in search results
+            products = search_soup.find_all("div", class_="productDataTableRow")
+            print(f"   - Products found in results: {len(products)}")
+            
+            # Print first few products if available
+            if products:
+                print(f"   - First product: {products[0].get_text(strip=True)[:100]}...")
+            
+            # Print full HTML if product doesn't exist (for debugging)
+            if not exists:
+                print(f"\n   - Full search page HTML (first 1000 chars):\n{search_soup.prettify()[:1000]}")
+        
+        return exists, search_soup
     except Exception as e:
         print(f"Error in does_product_exist: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def test_retrieve_product_data(url, code, cookies):
@@ -175,22 +260,47 @@ def main():
     # Step 2: Provide product code
     product_code = input("Enter product code to test (e.g., 806.68.713): ").strip()
     product_url = f"{BASE_PRODUCT_URL}?SKU={product_code.replace('.', '')}&ProductQuantity=20000"
-    print(f"\nTesting product URL: {product_url}")
+    print(f"\nTesting product URL (API endpoint): {product_url}")
 
-    # Step 3: Fetch product page
+    # Step 3: Fetch product page from API endpoint
+    print("\n=== Fetching from API endpoint ===")
     html = fetch_product_page(product_url, cookies)
     if not html:
-        print("Failed to fetch product page. Exiting tests.")
-        return
+        print("Failed to fetch product page from API endpoint.")
+        html = None
+    else:
+        # Parse the HTML with BeautifulSoup
+        soup = BeautifulSoup(html, "html.parser")
 
-    # Parse the HTML with BeautifulSoup
-    soup = BeautifulSoup(html, "html.parser")
-
-    # Step 4: Run individual function tests
-    print("\n--- Running Function Tests ---")
-    test_handle_singular_product(soup)
-    test_extract_price_info(soup)
-    test_does_product_exist(code=product_code, cookies=cookies)
+        # Step 4: Run individual function tests
+        print("\n--- Running Function Tests (API Endpoint) ---")
+        test_handle_singular_product(soup)
+        test_extract_price_info(soup)
+        test_extract_product_description(soup)
+    
+    # Now try fetching from the search/direct product URL
+    print("\n\n=== Fetching from search endpoint ===")
+    exists, search_soup = test_does_product_exist(code=product_code, cookies=cookies)
+    
+    if search_soup and exists:
+        print("\n--- Running Function Tests (Search/Direct Product Page) ---")
+        product_description_from_search = extract_product_description(search_soup)
+        print("\n✅ Testing extract_product_description() with search page soup...")
+        if product_description_from_search and product_description_from_search != "No description available":
+            if "<!DOCTYPE html>" in product_description_from_search and "<html" in product_description_from_search:
+                print("✅ Product description HTML generated successfully from search page")
+                print(f"   - HTML length: {len(product_description_from_search)} characters")
+                if "product-description-container" in product_description_from_search:
+                    print("   - Contains product-description-container")
+                if "property-section" in product_description_from_search:
+                    print("   - Contains property sections")
+            else:
+                print("⚠️ Result is not valid HTML")
+        else:
+            print(f"⚠️ No description available from search page: {product_description_from_search}")
+    
+    # Test retrieve_product_data (which uses both URLs)
+    print("\n\n--- Testing Full retrieve_product_data() ---")
     test_retrieve_product_data(url=product_url, cookies=cookies, code=product_code)
 
 
