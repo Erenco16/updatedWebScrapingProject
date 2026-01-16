@@ -140,7 +140,8 @@ def download_datanorm_via_selenium(email_to_send="erenbasaran2002@gmail.com", ti
         driver.get(DATANORM_URL)
 
         wait = WebDriverWait(driver, timeout)
-
+        wait.until(EC.presence_of_element_located((By.ID, "DatanormDownload_ArticleDataALL")))
+        
         # Click article data ALL radio
         radio_article = wait.until(EC.element_to_be_clickable((By.ID, "DatanormDownload_ArticleDataALL")))
         driver.execute_script("arguments[0].click();", radio_article)
