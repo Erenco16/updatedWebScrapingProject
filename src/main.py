@@ -467,8 +467,6 @@ def main():
             return
 
         df = pd.read_excel(INPUT_FILE)
-        # Randomly select 200 products from the excel file
-        df = df.sample(n=min(200, len(df)), random_state=None)
         stock_codes = df["stockCode"].tolist()
     
         base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
