@@ -70,7 +70,7 @@ def retrieve_product_data(url, code, cookie_information, retries=3):
             if isinstance(cookie_information, list):
                 cookie_information = {cookie['name']: cookie['value'] for cookie in cookie_information}
 
-            response = requests.get(url, headers=headers, cookies=cookie_information, timeout=60)
+            response = requests.get(url, headers=headers, cookies=cookie_information, timeout=60, allow_redirects=True)
 
             if response.status_code == 200:
                 soup = BeautifulSoup(response.text, "html.parser")
@@ -112,12 +112,28 @@ def does_product_exist(code, cookies):
     print(f"Checking existence of product {code}...")
     url = f"https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewParametricSearch-SimpleOfferSearch?SearchType=all&SearchTerm={code}"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "max-age=0",
+        "Pragma": "no-cache",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "Connection": "keep-alive",
+        "Keep-Alive": "timeout=5, max=100",
+        "Referer": "https://www.hafele.com.tr/",
+        "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="131"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"macOS"',
     }
     if isinstance(cookies, list):
         cookies = {cookie["name"]: cookie["value"] for cookie in cookies}
 
-    response = requests.get(url, headers=headers, cookies=cookies)
+    response = requests.get(url, headers=headers, cookies=cookies, timeout=60, allow_redirects=True)
     print(f"Url for search {url}")
     if response.status_code != 200:
         raise Exception(f"Failed to fetch the URL, status code: {response.status_code}")
@@ -338,10 +354,26 @@ def handle_group_product(soup, cookies, search_soup=None):
 
 def retrieve_singular_stock(url, cookies):
     headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "max-age=0",
+        "Pragma": "no-cache",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "Connection": "keep-alive",
+        "Keep-Alive": "timeout=5, max=100",
+        "Referer": "https://www.hafele.com.tr/",
+        "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="131"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"macOS"',
     }
     try:
-        response = requests.get(url, headers=headers, cookies=cookies, timeout=60)
+        response = requests.get(url, headers=headers, cookies=cookies, timeout=60, allow_redirects=True)
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, "html.parser")
             availability_flag = soup.select_one("span.availability-flag[style='color:#339C76']")
@@ -365,7 +397,22 @@ def extract_price_info(soup):
 def get_random_headers():
     return {
         "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Cache-Control": "max-age=0",
+        "Pragma": "no-cache",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "Connection": "keep-alive",
+        "Keep-Alive": "timeout=5, max=100",
+        "Referer": "https://www.hafele.com.tr/",
+        "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="131"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"macOS"',
     }
 
 def load_cookies(cookie_file):
@@ -420,6 +467,8 @@ def main():
             return
 
         df = pd.read_excel(INPUT_FILE)
+        # Randomly select 200 products from the excel file
+        df = df.sample(n=min(200, len(df)), random_state=None)
         stock_codes = df["stockCode"].tolist()
     
         base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
@@ -449,14 +498,10 @@ def main():
         output_data.to_excel(OUTPUT_FILE, index=False)
         print(f"✅ Results saved to {OUTPUT_FILE}")
 
-        email = os.getenv("gmail_receiver_email_2")
-        email_2 = os.getenv("gmail_receiver_email")
-      
+        # Send email only to informal_mail
         try:
-            send_mail_with_excel(email, OUTPUT_FILE)
-            send_mail_with_excel(email_2, OUTPUT_FILE)
-
-            print(f"📧 Email sent to {email} and {email_2}")
+            send_mail_with_excel(informal_mail, OUTPUT_FILE)
+            print(f"📧 Email sent to {informal_mail}")
         except Exception as e:
             print(f"❌ Error sending email: {e}")
 
