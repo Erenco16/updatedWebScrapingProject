@@ -420,6 +420,8 @@ def main():
             return
 
         df = pd.read_excel(INPUT_FILE)
+        # Randomly select 200 products from the excel file
+        df = df.sample(n=min(200, len(df)), random_state=None)
         stock_codes = df["stockCode"].tolist()
     
         base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
@@ -449,14 +451,10 @@ def main():
         output_data.to_excel(OUTPUT_FILE, index=False)
         print(f"✅ Results saved to {OUTPUT_FILE}")
 
-        email = os.getenv("gmail_receiver_email_2")
-        email_2 = os.getenv("gmail_receiver_email")
-      
+        # Send email only to informal_mail
         try:
-            send_mail_with_excel(email, OUTPUT_FILE)
-            send_mail_with_excel(email_2, OUTPUT_FILE)
-
-            print(f"📧 Email sent to {email} and {email_2}")
+            send_mail_with_excel(informal_mail, OUTPUT_FILE)
+            print(f"📧 Email sent to {informal_mail}")
         except Exception as e:
             print(f"❌ Error sending email: {e}")
 
