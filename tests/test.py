@@ -25,6 +25,9 @@ from src.main import (
     extract_product_description
 )
 
+# Shared headers for requests
+from src.request_headers import get_headers
+
 # Constants
 COOKIE_FILE = "cookies.pkl"
 BASE_PRODUCT_URL = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
@@ -107,25 +110,7 @@ def load_cookies():
 
 def fetch_product_page(url, cookies):
     """Fetch the product page HTML using the provided cookies."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Cache-Control": "max-age=0",
-        "Pragma": "no-cache",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1",
-        "Connection": "keep-alive",
-        "Keep-Alive": "timeout=5, max=100",
-        "Referer": "https://www.hafele.com.tr/",
-        "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="131"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"macOS"',
-    }
+    headers = get_headers()
     session = requests.Session()
 
     for cookie in cookies:
@@ -147,25 +132,7 @@ def fetch_product_page(url, cookies):
 
 def fetch_product_page_with_headers(url, cookies):
     """Fetch the product page HTML with full headers matching browser request."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Accept-Language": "en-GB,en;q=0.9",
-        "Cache-Control": "max-age=0",
-        "Pragma": "no-cache",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1",
-        "Connection": "keep-alive",
-        "Keep-Alive": "timeout=5, max=100",
-        "Referer": "https://www.hafele.com.tr/",
-        "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="131"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"macOS"',
-    }
+    headers = get_headers()
     session = requests.Session()
 
     for cookie in cookies:

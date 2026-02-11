@@ -25,7 +25,6 @@ def retrieve_product_data(driver, url, code, retries=3):
     """
     Fetch and parse the HTML to extract stock, price, and group product information.
     Uses Selenium browser to bypass Cloudflare protection.
-    Raises critical errors (403, Cloudflare blocks) to trigger immediate container exit.
     """
     for attempt in range(retries):
         try:
@@ -34,12 +33,6 @@ def retrieve_product_data(driver, url, code, retries=3):
             time.sleep(3)  # Wait for page to load
             
             html = driver.page_source
-            
-            if "403 Forbidden" in html or "Just a moment" in html or "enable JavaScript" in html:
-                error_msg = f"Cloudflare/403 block detected for product {code}. URL: {url}"
-                print(f"CRITICAL: {error_msg}")
-                raise RuntimeError(error_msg)
-            
             soup = BeautifulSoup(html, "html.parser")
             
             exists, search_soup = does_product_exist(driver, code=code)
@@ -59,22 +52,24 @@ def retrieve_product_data(driver, url, code, retries=3):
                     "stock_amount": "urun hafele.com.tr de bulunmuyor",
                     "product_description": "No description available",
                 }
-        except RuntimeError as e:
-            raise
         except Exception as e:
-            print(f"Error retrieving product data (attempt {attempt + 1}/{retries}): {e}")
-            if attempt < retries - 1:
-                time.sleep(2 ** attempt)
-            else:
-                raise RuntimeError(f"Failed to fetch data after {retries} retries for product {code}. Last error: {e}")
+            print(f"Error retrieving product data (attempt {attempt + 1}): {e}")
+            time.sleep(2 ** attempt)  # Exponential backoff
 
-    raise RuntimeError(f"Failed to fetch data after {retries} retries for URL: {url}")
+    print(f"Failed to fetch data after {retries} retries for URL: {url}")
+    return {
+        "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
+        "kdv_haric_net_fiyat": None,
+        "kdv_haric_satis_fiyati": None,
+        "stok_durumu": None,
+        "stock_amount": None,
+        "product_description": None,
+    }
 
 def does_product_exist(driver, code):
     """
     Check if product exists using Selenium browser navigation.
     Returns (exists: bool, soup: BeautifulSoup)
-    Raises critical errors to trigger container exit.
     """
     print(f"Checking existence of product {code}...")
     url = f"https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewParametricSearch-SimpleOfferSearch?SearchType=all&SearchTerm={code}"
@@ -82,23 +77,15 @@ def does_product_exist(driver, code):
         driver.get(url)
         time.sleep(2)  # Wait for page to load
         html = driver.page_source
-        
-        if "403 Forbidden" in html or "Just a moment" in html or "enable JavaScript" in html:
-            error_msg = f"Cloudflare/403 block detected during product search for {code}. URL: {url}"
-            print(f"CRITICAL: {error_msg}")
-            raise RuntimeError(error_msg)
-        
         soup = BeautifulSoup(html, "html.parser")
         print(f"Search URL: {url}")
         
         error_message = soup.find("p", class_="headlineStyle4")
         exists = not (error_message and f"{code} için aramanız başarısız oldu." in error_message.text)
         return exists, soup
-    except RuntimeError:
-        raise
     except Exception as e:
         print(f"Error checking product existence: {e}")
-        raise RuntimeError(f"Failed to check product existence for {code}: {e}")
+        raise
 
 def extract_product_description(soup):
     """Extract product description from the product properties section and format as responsive HTML."""
@@ -311,17 +298,11 @@ def handle_group_product(driver, soup, search_soup=None):
     }
 
 def retrieve_singular_stock(driver, url):
-    """Fetch singular stock information using Selenium. Raises critical errors."""
+    """Fetch singular stock information using Selenium."""
     try:
         driver.get(url)
         time.sleep(2)  # Wait for page to load
         html = driver.page_source
-        
-        if "403 Forbidden" in html or "Just a moment" in html or "enable JavaScript" in html:
-            error_msg = f"Cloudflare/403 block detected during singular stock fetch. URL: {url}"
-            print(f"CRITICAL: {error_msg}")
-            raise RuntimeError(error_msg)
-        
         soup = BeautifulSoup(html, "html.parser")
         
         availability_flag = soup.select_one("span.availability-flag[style='color:#339C76']")
@@ -329,11 +310,9 @@ def retrieve_singular_stock(driver, url):
             stock_amount = soup.select_one(".qty-available")
             return int(stock_amount.text.strip()) if stock_amount and stock_amount.text.strip().isdigit() else None
         return 0
-    except RuntimeError:
-        raise
     except Exception as e:
         print(f"Error fetching singular stock: {e}")
-        raise RuntimeError(f"Failed to fetch singular stock: {e}")
+    return None
 
 def extract_price_info(soup):
     prices = soup.select("span.price")
@@ -389,21 +368,7 @@ def main():
                 result = retrieve_product_data(driver=driver, url=url, code=code)
                 result["stockCode"] = code
                 results.append(result)
-            except RuntimeError as e:
-                # Critical error - exit immediately with email
-                error_msg = f"Critical error during scraping of product {code}: {str(e)}"
-                print(f"CRITICAL: {error_msg}")
-                try:
-                    send_mail(
-                        informal_mail,
-                        subject="❌ Hafele Web Scraping Failed - Critical Error",
-                        body=error_msg
-                    )
-                except Exception as email_err:
-                    print(f"Error sending error email: {email_err}")
-                raise RuntimeError(error_msg)
             except Exception as e:
-                # Non-critical error - log but continue
                 print(f"Error processing stock code {code}: {e}")
                 results.append({"stockCode": code, "stok_durumu": f"Error: {e}", "stock_amount": None})
 
@@ -445,7 +410,7 @@ def main():
         print(f"\n✅ Scraping complete. Process will exit now.\n")
     
     except Exception as e:
-        # Send error email with exception message and exit
+        # Send error email with exception message
         error_body = f"The Hafele web scraping process encountered an error:\n\nException: {str(e)}"
         try:
             send_mail(
@@ -457,8 +422,7 @@ def main():
             print(f"❌ Error sending error email: {email_error}")
         
         print(f"❌ Error during scraping: {e}")
-        import sys
-        sys.exit(1)
+        raise
     finally:
         # Always quit driver
         if driver:

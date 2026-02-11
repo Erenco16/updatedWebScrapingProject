@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 
 from src import login
 from src import main as main_module
@@ -140,34 +141,75 @@ def download_datanorm_via_selenium(email_to_send="erenbasaran2002@gmail.com", ti
         driver.get(DATANORM_URL)
 
         wait = WebDriverWait(driver, timeout)
-        wait.until(EC.presence_of_element_located((By.ID, "DatanormDownload_ArticleDataALL")))
-        
-        # Click article data ALL radio
-        radio_article = wait.until(EC.element_to_be_clickable((By.ID, "DatanormDownload_ArticleDataALL")))
-        driver.execute_script("arguments[0].click();", radio_article)
 
-        # Click price type UVPE radio
-        radio_price = wait.until(EC.element_to_be_clickable((By.ID, "DatanormDownload_PriceTypeUVPE")))
-        driver.execute_script("arguments[0].click();", radio_price)
+        try:
+            # Try the normal interaction flow first
+            # Click article data ALL radio
+            radio_article = wait.until(EC.element_to_be_clickable((By.ID, "DatanormDownload_ArticleDataALL")))
+            driver.execute_script("arguments[0].click();", radio_article)
 
-        # Click format EXCEL radio
-        radio_format = wait.until(EC.element_to_be_clickable((By.ID, "DatanormDownload_FormatEXCEL")))
-        driver.execute_script("arguments[0].click();", radio_format)
+            # Click price type UVPE radio
+            radio_price = wait.until(EC.element_to_be_clickable((By.ID, "DatanormDownload_PriceTypeUVPE")))
+            driver.execute_script("arguments[0].click();", radio_price)
 
-        # Fill email field
-        email_field = wait.until(EC.presence_of_element_located((By.ID, "DatanormDownload_Email")))
-        email_field.clear()
-        email_field.send_keys(email_to_send)
+            # Click format EXCEL radio
+            radio_format = wait.until(EC.element_to_be_clickable((By.ID, "DatanormDownload_FormatEXCEL")))
+            driver.execute_script("arguments[0].click();", radio_format)
 
-        # Click download/request button
-        download_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-testid='DownloadArticleData']")))
-        driver.execute_script("arguments[0].click();", download_btn)
+            # Fill email field
+            email_field = wait.until(EC.presence_of_element_located((By.ID, "DatanormDownload_Email")))
+            email_field.clear()
+            email_field.send_keys(email_to_send)
 
-        # Wait briefly for any confirmation / success message (best-effort)
-        time.sleep(3)
+            # Click download/request button
+            download_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-testid='DownloadArticleData']")))
+            driver.execute_script("arguments[0].click();", download_btn)
 
-        # Optionally, look for a success message or dialog; if none found, assume requested
-        return {"status": "requested", "email": email_to_send}
+            # Wait briefly for any confirmation / success message (best-effort)
+            time.sleep(3)
+
+            return {"status": "requested", "email": email_to_send}
+
+        except TimeoutException:
+            # Fallback: try to close potential modal/popups and then use JS-based clicks
+            try:
+                # Attempt to close any modal-like link (same as in login flow)
+                try:
+                    modal_close = driver.find_element(By.XPATH, "//a[contains(@class, 'modal-link')]")
+                    driver.execute_script("arguments[0].click();", modal_close)
+                    time.sleep(1)
+                except Exception:
+                    pass
+
+                # Use JS to click elements more aggressively (selectors use id substrings)
+                js = f"""
+                (function(){{
+                    function clickSelector(sel){{
+                        try{{
+                            var el = document.querySelector(sel);
+                            if(el){{ el.click(); return true; }}
+                        }}catch(e){{}}
+                        return false;
+                    }}
+
+                    // try common id-based selectors
+                    clickSelector('[id*="ArticleData"]');
+                    clickSelector('[id*="PriceType"]');
+                    clickSelector('[id*="Format"]');
+                    var e = document.querySelector('[id*="Email"]');
+                    if(e){{ e.value = '%s'; }}
+                    clickSelector('button[data-testid="DownloadArticleData"]');
+                }})();
+                """ % (email_to_send.replace("'", "\\'"))
+
+                driver.execute_script(js)
+                time.sleep(2)
+
+                return {"status": "requested", "email": email_to_send}
+            except Exception as e2:
+                # If fallback also fails, notify and raise
+                send_mail(informal_mail, subject="❌ Hafele Datanorm Request Failed", body=f"Selenium interaction failed: {e2}")
+                raise
     except Exception as e:
         # Notify and re-raise
         send_mail(informal_mail, subject="❌ Hafele Datanorm Request Failed", body=str(e))

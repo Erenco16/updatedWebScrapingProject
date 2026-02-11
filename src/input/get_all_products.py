@@ -190,8 +190,8 @@ def download_zip_attachment():
     try:
         select_inbox(mail)
 
-        # ✅ last 2 hours requirement
-        hours_window = 2
+        # ✅ last 60 hours requirement
+        hours_window = 60
 
         criteria = build_search_criteria(
             sender=os.getenv("hafele_sender_email"),
@@ -203,33 +203,67 @@ def download_zip_attachment():
         if not msg_ids:
             print("❌ Email not found")
             return
+        # Build list of candidate messages within the time window and sort newest->oldest
+        candidates = []
+        for msg_id in msg_ids:
+            hdrs = fetch_message_headers(mail, msg_id)
+            dt_utc = get_message_datetime_utc(hdrs)
+            if is_within_window(dt_utc, now_utc, hours_window):
+                candidates.append((msg_id, dt_utc))
 
-        # ✅ only download from the latest one (within last 2 hours)
-        latest_id = pick_latest_message_id(mail, msg_ids, now_utc, hours_window)
-        if not latest_id:
+        if not candidates:
             print(f"❌ No email found within the last {hours_window} hours")
             return
 
-        msg = fetch_message(mail, latest_id)
+        candidates.sort(key=lambda x: x[1], reverse=True)
 
-        found_zip = False
-        for part in iter_attachments(msg):
-            zip_filename = get_zip_filename(part)
-            if not zip_filename:
+        found_excel = False
+        # Iterate messages from newest to oldest until we find a ZIP that contains exactly one Excel
+        for msg_id, msg_dt in candidates:
+            try:
+                msg = fetch_message(mail, msg_id)
+            except Exception as e:
+                print(f"⚠️ Failed to fetch message {msg_id}: {e}")
                 continue
 
-            found_zip = True
-            zip_path = save_attachment(part, zip_filename)
-            print(f"✅ ZIP downloaded: {zip_path}")
+            print(f"Checking email id {msg_id} dated {msg_dt} for ZIP attachments...")
+            found_zip_in_message = False
 
-            excel_path = extract_excel_from_zip(zip_path, SAVE_DIR)
-            print(f"✅ Excel extracted: {excel_path}")
+            for part in iter_attachments(msg):
+                zip_filename = get_zip_filename(part)
+                if not zip_filename:
+                    continue
 
-            # ✅ keep only the Excel file
-            delete_file(zip_path)
+                found_zip_in_message = True
+                zip_path = save_attachment(part, zip_filename)
+                print(f"✅ ZIP downloaded: {zip_path} (from message {msg_id})")
 
-        if not found_zip:
-            print("❌ No ZIP attachment found in the latest matching email")
+                try:
+                    excel_path = extract_excel_from_zip(zip_path, SAVE_DIR)
+                    print(f"✅ Excel extracted: {excel_path}")
+
+                    # Clean up ZIP and mark success
+                    delete_file(zip_path)
+                    found_excel = True
+                    break
+                except RuntimeError as e:
+                    # Specific problem with this ZIP (no excel, or multiple excels) — try previous attachment/email
+                    print(f"⚠️ Attachment {zip_path} invalid: {e} — trying previous email/attachment")
+                    delete_file(zip_path)
+                    continue
+                except Exception as e:
+                    print(f"⚠️ Unexpected error extracting {zip_path}: {e} — trying previous email/attachment")
+                    delete_file(zip_path)
+                    continue
+
+            if found_excel:
+                break
+
+            if not found_zip_in_message:
+                print(f"❌ No ZIP attachment found in email id {msg_id} — trying previous email")
+
+        if not found_excel:
+            print("❌ No valid ZIP with Excel found in recent emails")
 
     finally:
         mail.logout()
