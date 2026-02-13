@@ -22,23 +22,23 @@ services:
       - SE_EVENT_BUS_PUBLISH_PORT=4442
       - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
 
-  read_products:
-    build:
-      context: .
-      dockerfile: Dockerfile.input
-    container_name: read_products
-    depends_on:
-      selenium-hub:
-        condition: service_healthy
-      chrome:
-        condition: service_started
-    env_file:
-      - .env
-    environment:
-      - GRID_URL=http://selenium-hub:4444/wd/hub
-    volumes:
-      - ./src/input:/src/input
-    command: [ "python", "-m", "src.input.send_product_code_mail" ]
+  # read_products:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.input
+  #   container_name: read_products
+  #   depends_on:
+  #     selenium-hub:
+  #       condition: service_healthy
+  #     chrome:
+  #       condition: service_started
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     - GRID_URL=http://selenium-hub:4444/wd/hub
+  #   volumes:
+  #     - ./src/input:/src/input
+  #   command: [ "python", "-m", "src.input.send_product_code_mail" ]
 
   webscrape:
     build:
@@ -50,8 +50,8 @@ services:
         condition: service_healthy
       chrome:
         condition: service_started
-      read_products:
-        condition: service_completed_successfully
+      # read_products:
+      #   condition: service_completed_successfully
     env_file:
       - .env
     environment:

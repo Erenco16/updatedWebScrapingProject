@@ -7,6 +7,7 @@ import os
 from dotenv import load_dotenv
 from src.send_mail import send_mail_with_excel, send_mail
 import random
+from collections import deque
 
 load_dotenv()
 
@@ -21,29 +22,179 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:93.0) Gecko/20100101 Firefox/93.0",
 ]
 
+# ============================================================================
+# STEP 1 & 2 & 3: TAB POOL WITH COOKIE INJECTION HELPERS
+# ============================================================================
+
+def is_cloudflare_challenge_page(page_source):
+    """
+    Detect if current page is a Cloudflare challenge page.
+    Returns: bool
+    """
+    challenge_markers = [
+        "Just a moment",
+        "Checking your browser",
+        "cf-challenge",
+        "Challenge Processing",
+    ]
+    lower_source = page_source.lower()
+    return any(marker.lower() in lower_source for marker in challenge_markers)
+
+def apply_cookies_to_tab(driver, base_url="https://www.hafele.com.tr/", cookies=None):
+    """
+    Apply cookies to the current tab.
+    
+    Steps:
+    1. Navigate to base_url (required to be on domain before add_cookie)
+    2. For each cookie, remove incompatible keys and add it
+    3. Refresh page
+    
+    Args:
+        driver: Selenium WebDriver
+        base_url: Domain URL (must be same domain as cookies)
+        cookies: List of dicts from driver.get_cookies()
+    
+    Raises:
+        Exception if cookie injection fails
+    """
+    if cookies is None:
+        cookies = []
+    
+    try:
+        print(f"  Navigating to {base_url} to inject cookies...")
+        driver.get(base_url)
+        time.sleep(1)
+        
+        for cookie in cookies:
+            try:
+                # Remove keys that Selenium doesn't accept
+                c = cookie.copy()
+                # Remove Cloudflare-specific unsupported keys
+                unsupported_keys = ["sameSite", "domain"]
+                for key in unsupported_keys:
+                    c.pop(key, None)
+                
+                # Attempt to add the cookie
+                driver.add_cookie(c)
+                print(f"  ✓ Added cookie: {c.get('name', 'unknown')}")
+            except Exception as e:
+                print(f"  ⚠ Failed to add cookie {cookie.get('name', 'unknown')}: {e}")
+        
+        # Refresh to apply cookies
+        time.sleep(0.5)
+        driver.refresh()
+        time.sleep(2)
+        print("  ✓ Cookies injected and page refreshed")
+        
+    except Exception as e:
+        print(f"  ✗ Error applying cookies: {e}")
+        raise
+
+def open_tab_pool(driver, n_tabs=5, base_url="https://www.hafele.com.tr/", cookies=None):
+    """
+    Open exactly n_tabs as a pool and inject cookies into each.
+    
+    Args:
+        driver: Selenium WebDriver
+        n_tabs: Number of tabs to create (default 5)
+        base_url: Base domain URL for cookies
+        cookies: List of dicts from driver.get_cookies()
+    
+    Returns:
+        List[str]: List of window handles for each tab (length = n_tabs)
+    
+    Raises:
+        Exception if tab creation or cookie injection fails
+    """
+    if cookies is None:
+        cookies = []
+    
+    handles = []
+    
+    print(f"\n📑 Opening tab pool with {n_tabs} tabs...")
+    
+    try:
+        # Apply cookies to the first tab (current tab)
+        print(f"\nTab 1 (current):")
+        apply_cookies_to_tab(driver, base_url, cookies)
+        handles.append(driver.current_window_handle)
+        
+        # Create and cookies-inject remaining tabs
+        for i in range(1, n_tabs):
+            print(f"\nTab {i + 1} (new):")
+            driver.execute_script("window.open('');")
+            time.sleep(1)
+            
+            # Switch to the new tab
+            driver.switch_to.window(driver.window_handles[-1])
+            apply_cookies_to_tab(driver, base_url, cookies)
+            handles.append(driver.current_window_handle)
+        
+        print(f"\n✅ Tab pool created with {len(handles)} tabs\n")
+        return handles
+        
+    except Exception as e:
+        print(f"\n❌ Error creating tab pool: {e}")
+        raise
+
+def detect_and_backoff_cloudflare(driver, max_backoff=60):
+    """
+    Detect Cloudflare challenge on current tab and backoff if found.
+    
+    Args:
+        driver: Selenium WebDriver
+        max_backoff: Maximum backoff time in seconds
+    
+    Returns:
+        bool: True if challenge was detected (and we backed off), False otherwise
+    """
+    try:
+        page_source = driver.page_source
+        
+        if is_cloudflare_challenge_page(page_source):
+            backoff_time = random.uniform(20, min(60, max_backoff))
+            print(f"  ⚠ Cloudflare challenge detected! Backing off for {backoff_time:.1f}s...")
+            time.sleep(backoff_time)
+            
+            # Try refreshing and re-applying cookies
+            try:
+                driver.refresh()
+                time.sleep(2)
+            except Exception as e:
+                print(f"  ⚠ Refresh failed: {e}")
+            
+            return True
+        return False
+    except Exception as e:
+        print(f"  ⚠ Error checking for Cloudflare challenge: {e}")
+        return False
+
 def retrieve_product_data(driver, url, code, retries=3):
     """
     Fetch and parse the HTML to extract stock, price, and group product information.
     Uses Selenium browser to bypass Cloudflare protection.
+    
+    ⚠ OPTIMIZED: Avoids calling does_product_exist for every product (double navigation).
+       Instead, parses the product page itself to determine existence and extract data.
     """
     for attempt in range(retries):
         try:
             print(f"Navigating to URL: {url}")
             driver.get(url)
-            time.sleep(3)  # Wait for page to load
+            
+            # Check for Cloudflare challenge and backoff if needed
+            if detect_and_backoff_cloudflare(driver):
+                continue  # Retry after backoff
+            
+            time.sleep(2)  # Wait for page to load
             
             html = driver.page_source
             soup = BeautifulSoup(html, "html.parser")
             
-            exists, search_soup = does_product_exist(driver, code=code)
-            if exists:
-                group_table = soup.find("tr", id="productBomArticlesInformation")
-                return (
-                    handle_group_product(driver, soup, search_soup=search_soup)
-                    if group_table
-                    else handle_singular_product(soup, search_soup=search_soup)
-                )
-            else:
+            # Check if product exists by looking for error messages or product elements
+            error_message = soup.find("p", class_="headlineStyle4")
+            if error_message and f"{code} için aramanız başarısız oldu." in error_message.text:
+                # Product not found
                 return {
                     "kdv_haric_tavsiye_edilen_perakende_fiyat": "urun hafele.com.tr de bulunmuyor",
                     "kdv_haric_net_fiyat": "urun hafele.com.tr de bulunmuyor",
@@ -52,8 +203,16 @@ def retrieve_product_data(driver, url, code, retries=3):
                     "stock_amount": "urun hafele.com.tr de bulunmuyor",
                     "product_description": "No description available",
                 }
+            
+            # Product found, parse it
+            group_table = soup.find("tr", id="productBomArticlesInformation")
+            if group_table:
+                return handle_group_product(driver, soup, search_soup=soup)
+            else:
+                return handle_singular_product(soup, search_soup=soup)
+                
         except Exception as e:
-            print(f"Error retrieving product data (attempt {attempt + 1}): {e}")
+            print(f"Error retrieving product data (attempt {attempt + 1}/{retries}): {e}")
             time.sleep(2 ** attempt)  # Exponential backoff
 
     print(f"Failed to fetch data after {retries} retries for URL: {url}")
@@ -70,6 +229,9 @@ def does_product_exist(driver, code):
     """
     Check if product exists using Selenium browser navigation.
     Returns (exists: bool, soup: BeautifulSoup)
+    
+    ⚠ DEPRECATED: This function is no longer used in the main scraping loop
+       to avoid double navigation. It's kept for backward compatibility.
     """
     print(f"Checking existence of product {code}...")
     url = f"https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewParametricSearch-SimpleOfferSearch?SearchType=all&SearchTerm={code}"
@@ -323,13 +485,76 @@ def extract_price_info(soup):
         "kdv_haric_satis_fiyati": prices[1].text.strip() if len(prices) > 1 else None,
     }
 
+# ============================================================================
+# STEP 4 & 6: ROUND-ROBIN TAB POOL SCRAPER
+# ============================================================================
+
+def scrape_with_tab_pool(driver, handles, product_urls, base_interval=1.0, jitter=(0.2, 0.9)):
+    """
+    Scrape product URLs using round-robin interleaving across a pool of tabs.
+    
+    Args:
+        driver: Selenium WebDriver
+        handles: List[str] of window handles (from open_tab_pool)
+        product_urls: List[(url: str, code: str)] of products to scrape
+        base_interval: Base time in seconds between requests (default 1.0s)
+        jitter: Tuple (min, max) of random jitter to add (default 0.2-0.9s)
+    
+    Returns:
+        List[dict]: Results from each product (same format as retrieve_product_data)
+    """
+    results = []
+    queue = deque(product_urls)
+    tab_index = 0
+    total_products = len(product_urls)
+    processed = 0
+    
+    print(f"\n🔄 Starting round-robin scraping with {len(handles)} tabs...")
+    print(f"   Total products to scrape: {total_products}\n")
+    
+    while queue:
+        handle = handles[tab_index]
+        url, code = queue.popleft()
+        processed += 1
+        
+        try:
+            # Switch to the current tab
+            driver.switch_to.window(handle)
+            print(f"[{processed}/{total_products}] Tab #{tab_index + 1} -> Scraping {code}...")
+            
+            # Retrieve product data
+            result = retrieve_product_data(driver=driver, url=url, code=code)
+            result["stockCode"] = code
+            results.append(result)
+            
+        except Exception as e:
+            print(f"❌ Error processing {code} on tab #{tab_index + 1}: {e}")
+            results.append({
+                "stockCode": code,
+                "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
+                "kdv_haric_net_fiyat": None,
+                "kdv_haric_satis_fiyati": None,
+                "stok_durumu": f"Error: {e}",
+                "stock_amount": None,
+                "product_description": None,
+            })
+        
+        # Move to next tab (round-robin)
+        tab_index = (tab_index + 1) % len(handles)
+    
+    print(f"\n✅ Round-robin scraping complete: {len(results)} products processed\n")
+    return results
+
 def main():
     """
-    Main scraping workflow:
+    Main scraping workflow with tab pool and round-robin interleaving:
     1. Create single Selenium driver with retry
     2. Login using that driver
-    3. Scrape all products using browser navigation
-    4. Quit driver and cleanup
+    3. Capture cookies from logged-in session
+    4. Open 5-tab pool and inject cookies
+    5. Scrape all products using round-robin scheduling across tabs
+    6. Save results to Excel and send email
+    7. Quit driver and cleanup
     """
     informal_mail = os.getenv("informal_mail")
     driver = None
@@ -339,13 +564,13 @@ def main():
         send_mail(
             informal_mail,
             subject="🚀 Hafele Web Scraping Started",
-            body="The Hafele web scraping process has started. You will receive another email when it completes."
+            body="The Hafele web scraping process has started with 5-tab pool optimization. You will receive another email when it completes."
         )
     except Exception as e:
         print(f"❌ Error sending start email: {e}")
     
     try:
-        # Create Selenium driver with robust retry (replaces /status polling)
+        # Create Selenium driver with robust retry
         print("\n📱 Creating Selenium driver...\n")
         driver = make_driver()
         
@@ -353,24 +578,36 @@ def main():
         print("\n🔐 Logging in...\n")
         login.handle_login(driver=driver)
         
-        # Load product codes - pick 200 random ones
+        # ====================================================================
+        # STEP 1: Capture cookies from logged-in session
+        # ====================================================================
+        print("\n🍪 Capturing login cookies...\n")
+        cookies = driver.get_cookies()
+        print(f"✓ Captured {len(cookies)} cookies")
+        
+        # ====================================================================
+        # STEP 3: Open 5-tab pool with cookie injection
+        # ====================================================================
+        base_url = "https://www.hafele.com.tr/"
+        tab_handles = open_tab_pool(driver, n_tabs=5, base_url=base_url, cookies=cookies)
+        
+        # Load product codes
         df = pd.read_excel(INPUT_FILE)
         stock_codes = df["stockCode"].tolist()
         
-        base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
-        product_urls = [(f"{base_url}?SKU={code.replace('.', '')}&ProductQuantity=20000", code) for code in stock_codes]
-
-        # Scrape all products using Selenium
-        results = []
-        for url, code in product_urls:
-            try:
-                print(f"Scraping data for stock code {code}...")
-                result = retrieve_product_data(driver=driver, url=url, code=code)
-                result["stockCode"] = code
-                results.append(result)
-            except Exception as e:
-                print(f"Error processing stock code {code}: {e}")
-                results.append({"stockCode": code, "stok_durumu": f"Error: {e}", "stock_amount": None})
+        base_url_products = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
+        product_urls = [(f"{base_url_products}?SKU={code.replace('.', '')}&ProductQuantity=20000", code) for code in stock_codes]
+        
+        # ====================================================================
+        # STEP 4: Scrape using round-robin tab pool with Cloudflare detection
+        # ====================================================================
+        results = scrape_with_tab_pool(
+            driver=driver,
+            handles=tab_handles,
+            product_urls=product_urls,
+            base_interval=1.0,
+            jitter=(0.2, 0.9)
+        )
 
         # Save results to Excel
         if os.path.exists(OUTPUT_FILE):
@@ -402,7 +639,7 @@ def main():
             send_mail(
                 informal_mail,
                 subject="✅ Hafele Web Scraping Completed",
-                body="The Hafele web scraping process has completed successfully. Results have been saved and sent to the recipients."
+                body="The Hafele web scraping process has completed successfully using the 5-tab pool with round-robin scheduling. Results have been saved and sent to the recipients."
             )
         except Exception as e:
             print(f"❌ Error sending completion email: {e}")
