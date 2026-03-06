@@ -1,304 +1,206 @@
 import sys
 import os
-import pickle
-import json
 import time
-import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
 
-# Load environment variables
 load_dotenv()
 
-# Add the parent directory to sys.path so we can import src
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-# Import main functions for testing
+from src import login
+from src.selenium_client import make_driver
 from src.main import (
     handle_singular_product,
+    handle_group_product,
     retrieve_product_data,
     extract_price_info,
     does_product_exist,
-    extract_product_description
+    extract_product_description,
+    retrieve_singular_stock,
 )
 
-# Shared headers for requests
-from src.request_headers import get_headers
-
-# Constants
-COOKIE_FILE = "cookies.pkl"
-BASE_PRODUCT_URL = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
+BASE_PRODUCT_URL = (
+    "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY"
+    "/ViewProduct-GetPriceAndAvailabilityInformationPDS"
+)
 
 
-def handle_login():
-    """Perform login using Selenium and save cookies."""
-    options = Options()
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--start-maximized")
-    options.add_argument("--headless")  # Run headless
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument(f"user-agent={os.getenv('USER_AGENT', 'Mozilla/5.0')}")
+# ── helpers ──────────────────────────────────────────────────────────────────
 
-    driver = webdriver.Chrome(options=options)
+def build_product_url(code: str) -> str:
+    return f"{BASE_PRODUCT_URL}?SKU={code.replace('.', '')}&ProductQuantity=20000"
 
-    driver.get("https://www.hafele.com.tr/")
-    time.sleep(5)
 
-    username = os.getenv("hafele_username")
-    password = os.getenv("hafele_password")
-
-    try:
-        element = driver.find_element(By.XPATH, "//a[contains(@class, 'a-btn') and contains(@class, 'modal-link')]")
-        driver.execute_script("arguments[0].click();", element)
-    except Exception:
-        pass  # If the warning page doesn't appear, continue
-
-    # Handle login
-    login_header = driver.find_element(By.ID, "headerLoginLinkAction")
-    login_header.click()
-
-    username_input = driver.find_element(By.ID, "ShopLoginForm_Login_headerItemLogin")
-    password_input = driver.find_element(By.ID, "ShopLoginForm_Password_headerItemLogin")
-    username_input.send_keys(username)
-    password_input.send_keys(password)
-
-    try:
-        checkbox = driver.find_element(By.ID, "divShopLoginForm_RememberLogin_headerItemLogin")
-        checkbox.click()
-    except Exception:
-        pass  # Ignore checkbox error if not present
-
+def get_soup(driver, url: str) -> BeautifulSoup:
+    driver.get(url)
     time.sleep(2)
+    return BeautifulSoup(driver.page_source, "html.parser")
 
-    login_btn = driver.find_element(By.XPATH, "//button[@data-testid='ajaxAccountLoginFormBtn']")
-    login_btn.click()
-    time.sleep(10)
 
-    # Save cookies
-    with open(COOKIE_FILE, "wb") as file:
-        pickle.dump(driver.get_cookies(), file)
+# ── individual test functions ─────────────────────────────────────────────────
 
-    # Save session information
+def test_does_product_exist(driver, code: str):
+    print("\n" + "=" * 60)
+    print("TEST: does_product_exist()")
+    print("=" * 60)
     try:
-        session_info = driver.execute_script("return window.localStorage.getItem('sessionInfoData');")
-        if session_info:
-            session_info_json = json.loads(session_info)
-            with open("session_info.json", "w") as file:
-                json.dump(session_info_json, file, indent=4)
-            print(f"Session info saved: {session_info_json}")
-    except Exception:
-        pass  # Ignore session info error if not present
-
-    driver.quit()
-
-
-def load_cookies():
-    """Load cookies from file or perform login if missing."""
-    if os.path.exists(COOKIE_FILE):
-        with open(COOKIE_FILE, "rb") as file:
-            return pickle.load(file)
-    else:
-        print("No existing cookies found. Logging in...")
-        handle_login()
-        with open(COOKIE_FILE, "rb") as file:
-            return pickle.load(file)
-
-
-def fetch_product_page(url, cookies):
-    """Fetch the product page HTML using the provided cookies."""
-    headers = get_headers()
-    session = requests.Session()
-
-    for cookie in cookies:
-        session.cookies.set(cookie['name'], cookie['value'])
-
-    try:
-        response = session.get(url, headers=headers, timeout=60, allow_redirects=True)
-        if response.status_code == 200:
-            print("✅ Product page fetched successfully.")
-            return response.text
-        else:
-            print(f"❌ Failed to fetch product page. HTTP Status: {response.status_code}")
-            print(f"Response preview: {response.text[:300]}")
-            return None
-    except requests.RequestException as e:
-        print(f"❌ Request error: {e}")
-        return None
-
-
-def fetch_product_page_with_headers(url, cookies):
-    """Fetch the product page HTML with full headers matching browser request."""
-    headers = get_headers()
-    session = requests.Session()
-
-    for cookie in cookies:
-        session.cookies.set(cookie['name'], cookie['value'])
-
-    try:
-        response = session.get(url, headers=headers, timeout=60, allow_redirects=True)
-        if response.status_code == 200:
-            print(f"✅ Product page fetched successfully from: {url}")
-            return response.text
-        else:
-            print(f"❌ Failed to fetch product page. HTTP Status: {response.status_code}")
-            print(f"Response preview: {response.text[:300]}")
-            return None
-    except requests.RequestException as e:
-        print(f"❌ Request error: {e}")
-        return None
-
-
-def test_handle_singular_product(soup):
-    """Test the `handle_singular_product()` function."""
-    print("\nTesting handle_singular_product()...")
-    try:
-        result = handle_singular_product(soup)
-        print(f"Result: {result}")
+        exists, soup = does_product_exist(driver=driver, code=code)
+        print(f"  exists        : {exists}")
+        if soup:
+            title = soup.title.string if soup.title else "N/A"
+            print(f"  page title    : {title}")
+            products = soup.find_all("div", class_="productDataTableRow")
+            print(f"  products found: {len(products)}")
+        return exists, soup
     except Exception as e:
-        print(f"Error in handle_singular_product: {e}")
+        print(f"  ❌ ERROR: {e}")
+        import traceback; traceback.print_exc()
+        return False, None
 
 
-def test_extract_price_info(soup):
-    """Test the `extract_price_info()` function."""
-    print("\nTesting extract_price_info()...")
+def test_extract_price_info(soup: BeautifulSoup):
+    print("\n" + "=" * 60)
+    print("TEST: extract_price_info()")
+    print("=" * 60)
     try:
         result = extract_price_info(soup)
-        print(f"Prices extracted: {result}")
+        for k, v in result.items():
+            print(f"  {k}: {v}")
+        return result
     except Exception as e:
-        print(f"Error in extract_price_info: {e}")
+        print(f"  ❌ ERROR: {e}")
+        import traceback; traceback.print_exc()
 
 
-def test_extract_product_description(soup):
-    """Test the `extract_product_description()` function."""
-    print("\nTesting extract_product_description()...")
+def test_extract_product_description(soup: BeautifulSoup, label: str = ""):
+    print("\n" + "=" * 60)
+    print(f"TEST: extract_product_description() {label}")
+    print("=" * 60)
     try:
         result = extract_product_description(soup)
-        if result and result != "No description available":
-            # Check if it's valid HTML
-            if "<!DOCTYPE html>" in result and "<html" in result:
-                print("✅ Product description HTML generated successfully")
-                print(f"   - HTML length: {len(result)} characters")
-                # Check for key HTML elements
-                if "product-description-container" in result:
-                    print("   - Contains product-description-container")
-                if "property-section" in result:
-                    print("   - Contains property sections")
-                if "Ürün Özellikleri" in result:
-                    print("   - Contains Turkish header")
-                print(f"   - First 200 chars: {result[:200]}...")
-            else:
-                print("⚠️ Result is not valid HTML")
-                print(f"   Result: {result[:200]}...")
+        if not result or result == "No description available":
+            print("  ⚠️  No description available")
         else:
-            print(f"⚠️ No description available: {result}")
+            is_html = "<!DOCTYPE html>" in result or "<div" in result
+            print(f"  HTML output       : {is_html}")
+            print(f"  Length (chars)    : {len(result)}")
+            print(f"  Has container div : {'product-description-container' in result}")
+            print(f"  Has property secs : {'property-section' in result}")
+            print(f"  Preview (200 ch)  : {result[:200]}...")
+        return result
     except Exception as e:
-        print(f"Error in extract_product_description: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"  ❌ ERROR: {e}")
+        import traceback; traceback.print_exc()
 
 
-def test_does_product_exist(code, cookies):
-    """Test the `does_product_exist()` function."""
-    print("\nTesting does_product_exist()...")
+def test_handle_singular_product(soup: BeautifulSoup, search_soup: BeautifulSoup = None):
+    print("\n" + "=" * 60)
+    print("TEST: handle_singular_product()")
+    print("=" * 60)
     try:
-        exists, search_soup = does_product_exist(code=code, cookies=cookies)
-        print(f"✅ Product exists: {exists}")
-        
-        # Print relevant information from the search results page
-        if search_soup:
-            print(f"\n📄 Search Results Page HTML Preview:")
-            print(f"   - Page title: {search_soup.title.string if search_soup.title else 'N/A'}")
-            
-            # Look for product count or search results info
-            search_info = search_soup.find("p", class_="headlineStyle4")
-            if search_info:
-                print(f"   - Search info: {search_info.get_text(strip=True)[:200]}...")
-            
-            # Check for products in search results
-            products = search_soup.find_all("div", class_="productDataTableRow")
-            print(f"   - Products found in results: {len(products)}")
-            
-            # Print first few products if available
-            if products:
-                print(f"   - First product: {products[0].get_text(strip=True)[:100]}...")
-            
-            # Print full HTML if product doesn't exist (for debugging)
-            if not exists:
-                print(f"\n   - Full search page HTML (first 1000 chars):\n{search_soup.prettify()[:1000]}")
-        
-        return exists, search_soup
+        result = handle_singular_product(soup, search_soup=search_soup)
+        for k, v in result.items():
+            if k == "product_description":
+                length = len(v) if v and v != "No description available" else 0
+                print(f"  product_description: [HTML, {length} chars]" if length else f"  product_description: {v}")
+            else:
+                print(f"  {k}: {v}")
+        return result
     except Exception as e:
-        print(f"Error in does_product_exist: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"  ❌ ERROR: {e}")
+        import traceback; traceback.print_exc()
 
 
-def test_retrieve_product_data(url, code, cookies):
-    """Test the `retrieve_product_data()` function."""
-    print("\nTesting retrieve_product_data()...")
+def test_handle_group_product(driver, soup: BeautifulSoup, search_soup: BeautifulSoup = None):
+    print("\n" + "=" * 60)
+    print("TEST: handle_group_product()")
+    print("=" * 60)
     try:
-        result = retrieve_product_data(url=url, code=code, cookie_information=cookies)
-        print(f"Product data: {result}")
+        result = handle_group_product(driver=driver, soup=soup, search_soup=search_soup)
+        for k, v in result.items():
+            if k == "product_description":
+                length = len(v) if v and v != "No description available" else 0
+                print(f"  product_description: [HTML, {length} chars]" if length else f"  product_description: {v}")
+            else:
+                print(f"  {k}: {v}")
+        return result
     except Exception as e:
-        print(f"Error in retrieve_product_data: {e}")
+        print(f"  ❌ ERROR: {e}")
+        import traceback; traceback.print_exc()
 
+
+def test_retrieve_product_data(driver, url: str, code: str):
+    print("\n" + "=" * 60)
+    print("TEST: retrieve_product_data()  [full pipeline]")
+    print("=" * 60)
+    try:
+        result = retrieve_product_data(driver=driver, url=url, code=code)
+        for k, v in result.items():
+            if k == "product_description":
+                length = len(v) if v and v != "No description available" else 0
+                print(f"  product_description: [HTML, {length} chars]" if length else f"  product_description: {v}")
+            else:
+                print(f"  {k}: {v}")
+        return result
+    except Exception as e:
+        print(f"  ❌ ERROR: {e}")
+        import traceback; traceback.print_exc()
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    # Step 1: Load cookies or perform login
-    cookies = load_cookies()
-    if not cookies:
-        print("Unable to load cookies. Exiting tests.")
-        return
-
-    # Step 2: Provide product code
     product_code = input("Enter product code to test (e.g., 806.68.713): ").strip()
-    product_url = f"{BASE_PRODUCT_URL}?SKU={product_code.replace('.', '')}&ProductQuantity=20000"
-    print(f"\nTesting product URL (API endpoint): {product_url}")
+    product_url  = build_product_url(product_code)
 
-    # Step 3: Fetch product page from API endpoint
-    print("\n=== Fetching from API endpoint ===")
-    html = fetch_product_page(product_url, cookies)
-    if not html:
-        print("Failed to fetch product page from API endpoint.")
-        html = None
-    else:
-        # Parse the HTML with BeautifulSoup
-        soup = BeautifulSoup(html, "html.parser")
+    print(f"\n🔗 Product URL : {product_url}")
 
-        # Step 4: Run individual function tests
-        print("\n--- Running Function Tests (API Endpoint) ---")
-        test_handle_singular_product(soup)
-        test_extract_price_info(soup)
-        test_extract_product_description(soup)
-    
-    # Now try fetching from the search/direct product URL
-    print("\n\n=== Fetching from search endpoint ===")
-    exists, search_soup = test_does_product_exist(code=product_code, cookies=cookies)
-    
-    if search_soup and exists:
-        print("\n--- Running Function Tests (Search/Direct Product Page) ---")
-        product_description_from_search = extract_product_description(search_soup)
-        print("\n✅ Testing extract_product_description() with search page soup...")
-        if product_description_from_search and product_description_from_search != "No description available":
-            if "<!DOCTYPE html>" in product_description_from_search and "<html" in product_description_from_search:
-                print("✅ Product description HTML generated successfully from search page")
-                print(f"   - HTML length: {len(product_description_from_search)} characters")
-                if "product-description-container" in product_description_from_search:
-                    print("   - Contains product-description-container")
-                if "property-section" in product_description_from_search:
-                    print("   - Contains property sections")
-            else:
-                print("⚠️ Result is not valid HTML")
+    # ── driver + login ────────────────────────────────────────────────────────
+    print("\n📱 Creating Selenium driver...")
+    driver = make_driver()
+
+    print("🔐 Logging in...")
+    login.handle_login(driver=driver)
+
+    try:
+        # ── 1. does_product_exist ─────────────────────────────────────────────
+        exists, search_soup = test_does_product_exist(driver, product_code)
+
+        if not exists:
+            print("\n⚠️  Product not found on hafele.com.tr — skipping remaining tests.")
+            return
+
+        # ── 2. fetch product page soup ────────────────────────────────────────
+        print(f"\n🌐 Fetching product page: {product_url}")
+        product_soup = get_soup(driver, product_url)
+
+        # ── 3. extract_price_info ─────────────────────────────────────────────
+        test_extract_price_info(product_soup)
+
+        # ── 4. extract_product_description (product page) ─────────────────────
+        test_extract_product_description(product_soup, label="[from product page]")
+
+        # ── 5. extract_product_description (search page) ─────────────────────
+        if search_soup:
+            test_extract_product_description(search_soup, label="[from search page]")
+
+        # ── 6. detect product type and run appropriate handler ─────────────────
+        group_table = product_soup.find("tr", id="productBomArticlesInformation")
+
+        if group_table:
+            print("\nℹ️  Group product detected.")
+            test_handle_group_product(driver, product_soup, search_soup=search_soup)
         else:
-            print(f"⚠️ No description available from search page: {product_description_from_search}")
-    
-    # Test retrieve_product_data (which uses both URLs)
-    print("\n\n--- Testing Full retrieve_product_data() ---")
-    test_retrieve_product_data(url=product_url, cookies=cookies, code=product_code)
+            print("\nℹ️  Singular product detected.")
+            test_handle_singular_product(product_soup, search_soup=search_soup)
+
+        # ── 7. full pipeline ──────────────────────────────────────────────────
+        test_retrieve_product_data(driver, product_url, product_code)
+
+    finally:
+        driver.quit()
+        print("\n✅ Driver closed. Tests complete.")
 
 
 if __name__ == "__main__":
