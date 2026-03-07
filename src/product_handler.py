@@ -64,9 +64,9 @@ def handle_group_product(driver, soup: BeautifulSoup, search_soup: BeautifulSoup
     for row in sub_rows:
         sku_el = row.find("a", class_="product-sku-title")
         if sku_el:
-            sku     = sku_el.text.strip().replace(".", "")
+            sku = sku_el.text.strip().replace(".", "")
             sub_url = f"{BASE_PRODUCT_URL}?SKU={sku}&ProductQuantity=20000&SynchronizationAjaxToken=1"
-            stock   = _retrieve_singular_stock(driver, sub_url)
+            stock = _retrieve_singular_stock(driver, sub_url)
             if stock is not None:
                 sub_stocks.append(stock)
 
@@ -75,8 +75,8 @@ def handle_group_product(driver, soup: BeautifulSoup, search_soup: BeautifulSoup
 
     return {
         **price_info,
-        "stok_durumu":         "set urun",
-        "stock_amount":        min(sub_stocks) if sub_stocks else None,
+        "stok_durumu": "set urun",
+        "stock_amount": min(sub_stocks) if sub_stocks else None,
         "product_description": description,
     }
 
@@ -96,15 +96,15 @@ def _extract_stock(soup: BeautifulSoup):
     print("\n🔍 DEBUG: Extracting stock data...\n")
 
     for row in soup.select("tr.values-tr"):
-        qty_el    = row.select_one("td.qty-available")
-        avail_el  = row.select_one("td.requestedPackageStatus .availability-flag")
+        qty_el = row.select_one("td.qty-available")
+        avail_el = row.select_one("td.requestedPackageStatus .availability-flag")
 
         if not (qty_el and avail_el):
             continue
 
-        raw_qty          = qty_el.text.strip()
+        raw_qty = qty_el.text.strip()
         availability_text = avail_el.text.strip().lower()
-        qty              = int(raw_qty) if raw_qty.isdigit() else None
+        qty = int(raw_qty) if raw_qty.isdigit() else None
 
         print(f"  Found stock: {raw_qty}, Status: {availability_text}")
 

@@ -139,9 +139,9 @@ def scrape_with_tab_pool(
             driver.switch_to.window(handles[tab_index])
             print(f"[{processed}/{total}] Tab #{tab_index + 1} → {code}")
 
-            result             = retrieve_product_data(driver, url, code)
+            result = retrieve_product_data(driver, url, code)
             result["stockCode"] = code
-            results[code]      = result
+            results[code] = result
 
         except Exception as e:
             print(f"  ❌ Unhandled error for {code}: {e}")
@@ -166,7 +166,7 @@ def scrape_with_tab_pool(
                 print(f"  Retry {round_num}/{max_final_retries} → {code}")
                 time.sleep(random.uniform(3, 6))
 
-                result             = retrieve_product_data(driver, url, code, retries=2)
+                result = retrieve_product_data(driver, url, code, retries=2)
                 result["stockCode"] = code
                 results[code]      = result
 
