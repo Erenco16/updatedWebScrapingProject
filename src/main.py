@@ -1,672 +1,143 @@
+"""
+main.py
+-------
+Entry point only. Responsible for:
+- Driver creation and login
+- Loading input Excel
+- Delegating to tab_pool and scraper
+- Saving output Excel
+- Sending notification emails
+"""
+
+import os
+import pandas as pd
+from dotenv import load_dotenv
+
 from src import login
 from src.selenium_client import make_driver
-from bs4 import BeautifulSoup
-import pandas as pd
-import time
-import os
-from dotenv import load_dotenv
+from src.tab_pool import open_tab_pool
+from src.scraper import scrape_with_tab_pool, FETCH_FAILED
 from src.send_mail import send_mail_with_excel, send_mail
-import random
-from collections import deque
 
 load_dotenv()
 
-# Define base directory and update file paths
-BASE_DIR = os.path.dirname(__file__)
-INPUT_FILE = os.path.join(BASE_DIR, "input", "product_codes.xlsx")
+BASE_DIR    = os.path.dirname(__file__)
+INPUT_FILE  = os.path.join(BASE_DIR, "input",  "product_codes.xlsx")
 OUTPUT_FILE = os.path.join(BASE_DIR, "output", "product_data_results.xlsx")
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:93.0) Gecko/20100101 Firefox/93.0",
-]
+BASE_PRODUCT_URL = (
+    "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY"
+    "/ViewProduct-GetPriceAndAvailabilityInformationPDS"
+)
 
-# ============================================================================
-# STEP 1 & 2 & 3: TAB POOL WITH COOKIE INJECTION HELPERS
-# ============================================================================
-
-def is_cloudflare_challenge_page(page_source):
-    """
-    Detect if current page is a Cloudflare challenge page.
-    Returns: bool
-    """
-    challenge_markers = [
-        "Just a moment",
-        "Checking your browser",
-        "cf-challenge",
-        "Challenge Processing",
-    ]
-    lower_source = page_source.lower()
-    return any(marker.lower() in lower_source for marker in challenge_markers)
-
-def apply_cookies_to_tab(driver, base_url="https://www.hafele.com.tr/", cookies=None):
-    """
-    Apply cookies to the current tab.
-    
-    Steps:
-    1. Navigate to base_url (required to be on domain before add_cookie)
-    2. For each cookie, remove incompatible keys and add it
-    3. Refresh page
-    
-    Args:
-        driver: Selenium WebDriver
-        base_url: Domain URL (must be same domain as cookies)
-        cookies: List of dicts from driver.get_cookies()
-    
-    Raises:
-        Exception if cookie injection fails
-    """
-    if cookies is None:
-        cookies = []
-    
-    try:
-        print(f"  Navigating to {base_url} to inject cookies...")
-        driver.get(base_url)
-        time.sleep(1)
-        
-        for cookie in cookies:
-            try:
-                # Remove keys that Selenium doesn't accept
-                c = cookie.copy()
-                # Remove Cloudflare-specific unsupported keys
-                unsupported_keys = ["sameSite", "domain"]
-                for key in unsupported_keys:
-                    c.pop(key, None)
-                
-                # Attempt to add the cookie
-                driver.add_cookie(c)
-                print(f"  ✓ Added cookie: {c.get('name', 'unknown')}")
-            except Exception as e:
-                print(f"  ⚠ Failed to add cookie {cookie.get('name', 'unknown')}: {e}")
-        
-        # Refresh to apply cookies
-        time.sleep(0.5)
-        driver.refresh()
-        time.sleep(2)
-        print("  ✓ Cookies injected and page refreshed")
-        
-    except Exception as e:
-        print(f"  ✗ Error applying cookies: {e}")
-        raise
-
-def open_tab_pool(driver, n_tabs=5, base_url="https://www.hafele.com.tr/", cookies=None):
-    """
-    Open exactly n_tabs as a pool and inject cookies into each.
-    
-    Args:
-        driver: Selenium WebDriver
-        n_tabs: Number of tabs to create (default 5)
-        base_url: Base domain URL for cookies
-        cookies: List of dicts from driver.get_cookies()
-    
-    Returns:
-        List[str]: List of window handles for each tab (length = n_tabs)
-    
-    Raises:
-        Exception if tab creation or cookie injection fails
-    """
-    if cookies is None:
-        cookies = []
-    
-    handles = []
-    
-    print(f"\n📑 Opening tab pool with {n_tabs} tabs...")
-    
-    try:
-        # Apply cookies to the first tab (current tab)
-        print(f"\nTab 1 (current):")
-        apply_cookies_to_tab(driver, base_url, cookies)
-        handles.append(driver.current_window_handle)
-        
-        # Create and cookies-inject remaining tabs
-        for i in range(1, n_tabs):
-            print(f"\nTab {i + 1} (new):")
-            driver.execute_script("window.open('');")
-            time.sleep(1)
-            
-            # Switch to the new tab
-            driver.switch_to.window(driver.window_handles[-1])
-            apply_cookies_to_tab(driver, base_url, cookies)
-            handles.append(driver.current_window_handle)
-        
-        print(f"\n✅ Tab pool created with {len(handles)} tabs\n")
-        return handles
-        
-    except Exception as e:
-        print(f"\n❌ Error creating tab pool: {e}")
-        raise
-
-def detect_and_backoff_cloudflare(driver, max_backoff=60):
-    """
-    Detect Cloudflare challenge on current tab and backoff if found.
-    
-    Args:
-        driver: Selenium WebDriver
-        max_backoff: Maximum backoff time in seconds
-    
-    Returns:
-        bool: True if challenge was detected (and we backed off), False otherwise
-    """
-    try:
-        page_source = driver.page_source
-        
-        if is_cloudflare_challenge_page(page_source):
-            backoff_time = random.uniform(20, min(60, max_backoff))
-            print(f"  ⚠ Cloudflare challenge detected! Backing off for {backoff_time:.1f}s...")
-            time.sleep(backoff_time)
-            
-            # Try refreshing and re-applying cookies
-            try:
-                driver.refresh()
-                time.sleep(2)
-            except Exception as e:
-                print(f"  ⚠ Refresh failed: {e}")
-            
-            return True
-        return False
-    except Exception as e:
-        print(f"  ⚠ Error checking for Cloudflare challenge: {e}")
-        return False
-
-def retrieve_product_data(driver, url, code, retries=3):
-    """
-    Fetch and parse the HTML to extract stock, price, and group product information.
-    Uses Selenium browser to bypass Cloudflare protection.
-    
-    ⚠ OPTIMIZED: Avoids calling does_product_exist for every product (double navigation).
-       Instead, parses the product page itself to determine existence and extract data.
-    """
-    for attempt in range(retries):
-        try:
-            print(f"Navigating to URL: {url}")
-            driver.get(url)
-            
-            # Check for Cloudflare challenge and backoff if needed
-            if detect_and_backoff_cloudflare(driver):
-                continue  # Retry after backoff
-            
-            time.sleep(2)  # Wait for page to load
-            
-            html = driver.page_source
-            soup = BeautifulSoup(html, "html.parser")
-            
-            # Check if product exists by looking for error messages or product elements
-            error_message = soup.find("p", class_="headlineStyle4")
-            if error_message and f"{code} için aramanız başarısız oldu." in error_message.text:
-                # Product not found
-                return {
-                    "kdv_haric_tavsiye_edilen_perakende_fiyat": "urun hafele.com.tr de bulunmuyor",
-                    "kdv_haric_net_fiyat": "urun hafele.com.tr de bulunmuyor",
-                    "kdv_haric_satis_fiyati": "urun hafele.com.tr de bulunmuyor",
-                    "stok_durumu": "urun hafele.com.tr de bulunmuyor",
-                    "stock_amount": "urun hafele.com.tr de bulunmuyor",
-                    "product_description": "No description available",
-                }
-            
-            # Product found, parse it
-            group_table = soup.find("tr", id="productBomArticlesInformation")
-            if group_table:
-                return handle_group_product(driver, soup, search_soup=soup)
-            else:
-                return handle_singular_product(soup, search_soup=soup)
-                
-        except Exception as e:
-            print(f"Error retrieving product data (attempt {attempt + 1}/{retries}): {e}")
-            time.sleep(2 ** attempt)  # Exponential backoff
-
-    print(f"Failed to fetch data after {retries} retries for URL: {url}")
-    return {
-        "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
-        "kdv_haric_net_fiyat": None,
-        "kdv_haric_satis_fiyati": None,
-        "stok_durumu": None,
-        "stock_amount": None,
-        "product_description": None,
-    }
-
-def does_product_exist(driver, code):
-    """
-    Check if product exists using Selenium browser navigation.
-    Returns (exists: bool, soup: BeautifulSoup)
-    
-    ⚠ DEPRECATED: This function is no longer used in the main scraping loop
-       to avoid double navigation. It's kept for backward compatibility.
-    """
-    print(f"Checking existence of product {code}...")
-    url = f"https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewParametricSearch-SimpleOfferSearch?SearchType=all&SearchTerm={code}"
-    try:
-        driver.get(url)
-        time.sleep(2)  # Wait for page to load
-        html = driver.page_source
-        soup = BeautifulSoup(html, "html.parser")
-        print(f"Search URL: {url}")
-        
-        error_message = soup.find("p", class_="headlineStyle4")
-        exists = not (error_message and f"{code} için aramanız başarısız oldu." in error_message.text)
-        return exists, soup
-    except Exception as e:
-        print(f"Error checking product existence: {e}")
-        raise
-
-def extract_product_description(soup):
-    """Extract product description from the product properties section and format as responsive HTML."""
-    try:
-        # Try multiple ways to find the properties container
-        properties_container = soup.find("div", class_="hfl-product-properties-content")
-        
-        # If not found, try finding the label and getting the next sibling
-        if not properties_container:
-            label = soup.find("div", class_="hfl-product-properties-label collapse__heading mobileNegativeMargin15")
-            if label:
-                # The properties content should be a sibling or nearby
-                properties_container = label.find_next("div", class_="hfl-product-properties-content")
-        
-        # Alternative: look for the collapse container
-        if not properties_container:
-            collapse_div = soup.find("div", class_="collapse in")
-            if collapse_div:
-                properties_container = collapse_div.find("div", class_="hfl-product-properties-content")
-        
-        if not properties_container:
-            print("⚠️ Could not find properties container")
-            return "No description available"
-        
-        sections = properties_container.find_all("div", class_="productPropertiesSection")
-        if not sections:
-            print("⚠️ Could not find product property sections")
-            return "No description available"
-        
-        # Extract all product property sections
-        html_sections = []
-        for section in sections:
-            header = section.find("h3", class_="productPropertiesSectionHeader")
-            body = section.find("div", class_="productPropertiesSectionBody")
-            
-            if header and body:
-                header_text = header.get_text(strip=True)
-                body_text = body.get_text(strip=True)
-                html_sections.append({
-                    "header": header_text,
-                    "body": body_text
-                })
-            else:
-                # Handle sections without headers (like the first introductory section)
-                body_text = section.get_text(strip=True)
-                if body_text:
-                    html_sections.append({
-                        "header": None,
-                        "body": body_text
-                    })
-        
-        if not html_sections:
-            print("⚠️ No html sections extracted")
-            return "No description available"
-        
-        # Build responsive HTML with inline styles
-        html_content = '''<style>
-    .product-description-container {
-        max-width: 800px;
-        margin: 0 auto;
-    }
-    
-    @media (max-width: 768px) {
-        .product-description-container {
-            border-radius: 4px;
-            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
-        }
-        
-        .description-header {
-            padding: 15px;
-        }
-        
-        .description-content {
-            padding: 15px;
-        }
-        
-        .property-section {
-            margin-bottom: 15px;
-            padding-bottom: 15px;
-        }
-        
-        .property-header {
-            padding: 10px 12px;
-            font-size: 14px;
-        }
-        
-        .property-body {
-            padding: 0 12px;
-            font-size: 13px;
-        }
-        
-        .intro-section {
-            padding: 12px;
-            margin-bottom: 15px;
-            font-size: 13px;
-        }
-    }
-    
-    @media (max-width: 480px) {
-        .description-header h1 {
-            font-size: 18px;
-        }
-        
-        .description-content {
-            padding: 12px;
-        }
-        
-        .property-section {
-            margin-bottom: 12px;
-            padding-bottom: 12px;
-        }
-        
-        .property-header {
-            padding: 8px 10px;
-            font-size: 13px;
-            border-left-width: 3px;
-        }
-        
-        .property-body {
-            padding: 0 10px;
-            font-size: 12px;
-        }
-    }
-</style>
-<div class="product-description-container" style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;">
-    <div class="description-header" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; text-align: center;">
-        <h1 style="font-size: clamp(20px, 5vw, 28px); font-weight: 600; letter-spacing: 0.5px; margin: 0;">📋 Ürün Özellikleri</h1>
-    </div>
-    <div class="description-content" style="padding: 20px;">
-'''
-        
-        # Add intro section if it exists (first section without header)
-        if html_sections and html_sections[0]["header"] is None:
-            html_content += f'        <div class="intro-section" style="background-color: #f0f4ff; padding: 15px; border-radius: 6px; margin-bottom: 20px; border-left: 4px solid #667eea; color: #333333; line-height: 1.6; font-size: clamp(13px, 3.5vw, 15px);">{html_sections[0]["body"]}</div>\n'
-            html_sections = html_sections[1:]  # Remove from list
-        
-        # Add property sections
-        for section in html_sections:
-            html_content += f'''        <div class="property-section" style="margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #e0e0e0;">
-            <div class="property-header" style="background-color: #f8f9fa; padding: 12px 15px; border-left: 4px solid #667eea; border-radius: 4px; margin-bottom: 12px; font-weight: 600; color: #333333; font-size: clamp(14px, 4vw, 16px);">{section["header"]}</div>
-            <div class="property-body" style="padding: 0 15px; color: #555555; line-height: 1.6; font-size: clamp(13px, 3.5vw, 15px); word-break: break-word;">{section["body"]}</div>
-        </div>
-'''
-        
-        html_content += '''    </div>
-</div>'''
-        
-        return html_content
-    except Exception as e:
-        print(f"Error extracting product description: {e}")
-        import traceback
-        traceback.print_exc()
-        return "No description available"
-
-def handle_singular_product(soup, search_soup=None):
-    price_info = extract_price_info(soup)
-    stock_rows = soup.select("tr.values-tr")
-    stock_amount = None
-    stock_status = None
-    print("\n🔍 DEBUG: Extracting stock data...\n")
-    for row in stock_rows:
-        stock_qty_element = row.select_one("td.qty-available")
-        availability_element = row.select_one("td.requestedPackageStatus .availability-flag")
-        if stock_qty_element and availability_element:
-            stock_qty = stock_qty_element.text.strip()
-            availability_text = availability_element.text.strip().lower()
-            print(f"Found stock: {stock_qty}, Status: {availability_text}")
-            stock_qty = int(stock_qty) if stock_qty.isdigit() else None
-            if "stokta mevcut" in availability_text:
-                stock_amount = stock_qty
-                stock_status = "stokta mevcut"
-                print(f"✅ Prioritizing 'stokta mevcut' stock: {stock_amount}")
-                break
-            if stock_amount is None:
-                stock_amount = stock_qty
-                stock_status = availability_text
-    if stock_status is None:
-        stock_info_element = soup.select_one("#productAvailabilityInformation .availability-flag")
-        stock_status = stock_info_element.text.strip() if stock_info_element else "Stok bilgisi bulunamadi"
-    print(f"📌 Final Stock Amount: {stock_amount}, Status: {stock_status}\n")
-    product_description = extract_product_description(search_soup or soup)
-    return {
-        **price_info,
-        "stok_durumu": stock_status,
-        "stock_amount": stock_amount,
-        "product_description": product_description,
-    }
-
-def handle_group_product(driver, soup, search_soup=None):
-    """Handle group product: fetch each sub-product's stock using Selenium."""
-    base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
-    sub_product_rows = soup.select(".BomArticlesTable .productDataTableQty")
-    sub_product_stocks = []
-    for row in sub_product_rows:
-        sku_element = row.find("a", class_="product-sku-title")
-        if sku_element:
-            sub_product_sku = sku_element.text.strip().replace(".", "")
-            sub_url = f"{base_url}?SKU={sub_product_sku}&ProductQuantity=20000&SynchronizationAjaxToken=1"
-            sub_stock = retrieve_singular_stock(driver, sub_url)
-            if sub_stock is not None:
-                sub_product_stocks.append(sub_stock)
-    main_product_stock = min(sub_product_stocks) if sub_product_stocks else None
-    price_info = extract_price_info(soup)
-    product_description = extract_product_description(search_soup or soup)
-    return {
-        **price_info,
-        "stok_durumu": "set urun",
-        "stock_amount": main_product_stock,
-        "product_description": product_description,
-    }
-
-def retrieve_singular_stock(driver, url):
-    """Fetch singular stock information using Selenium."""
-    try:
-        driver.get(url)
-        time.sleep(2)  # Wait for page to load
-        html = driver.page_source
-        soup = BeautifulSoup(html, "html.parser")
-        
-        availability_flag = soup.select_one("span.availability-flag[style='color:#339C76']")
-        if availability_flag and "stokta mevcut" in availability_flag.text.strip().lower():
-            stock_amount = soup.select_one(".qty-available")
-            return int(stock_amount.text.strip()) if stock_amount and stock_amount.text.strip().isdigit() else None
-        return 0
-    except Exception as e:
-        print(f"Error fetching singular stock: {e}")
-    return None
-
-def extract_price_info(soup):
-    prices = soup.select("span.price")
-    units = soup.select("span.perUnit")
-    return {
-        "kdv_haric_tavsiye_edilen_perakende_fiyat": prices[2].text.strip() if len(prices) > 2 else None,
-        "kdv_haric_net_fiyat": prices[0].text.strip() if len(prices) > 0 else None,
-        "kdv_haric_satis_fiyati": prices[1].text.strip() if len(prices) > 1 else None,
-    }
-
-# ============================================================================
-# STEP 4 & 6: ROUND-ROBIN TAB POOL SCRAPER
-# ============================================================================
-
-def scrape_with_tab_pool(driver, handles, product_urls, base_interval=1.0, jitter=(0.2, 0.9)):
-    """
-    Scrape product URLs using round-robin interleaving across a pool of tabs.
-    
-    Args:
-        driver: Selenium WebDriver
-        handles: List[str] of window handles (from open_tab_pool)
-        product_urls: List[(url: str, code: str)] of products to scrape
-        base_interval: Base time in seconds between requests (default 1.0s)
-        jitter: Tuple (min, max) of random jitter to add (default 0.2-0.9s)
-    
-    Returns:
-        List[dict]: Results from each product (same format as retrieve_product_data)
-    """
-    results = []
-    queue = deque(product_urls)
-    tab_index = 0
-    total_products = len(product_urls)
-    processed = 0
-    
-    print(f"\n🔄 Starting round-robin scraping with {len(handles)} tabs...")
-    print(f"   Total products to scrape: {total_products}\n")
-    
-    while queue:
-        handle = handles[tab_index]
-        url, code = queue.popleft()
-        processed += 1
-        
-        try:
-            # Switch to the current tab
-            driver.switch_to.window(handle)
-            print(f"[{processed}/{total_products}] Tab #{tab_index + 1} -> Scraping {code}...")
-            
-            # Retrieve product data
-            result = retrieve_product_data(driver=driver, url=url, code=code)
-            result["stockCode"] = code
-            results.append(result)
-            
-        except Exception as e:
-            print(f"❌ Error processing {code} on tab #{tab_index + 1}: {e}")
-            results.append({
-                "stockCode": code,
-                "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
-                "kdv_haric_net_fiyat": None,
-                "kdv_haric_satis_fiyati": None,
-                "stok_durumu": f"Error: {e}",
-                "stock_amount": None,
-                "product_description": None,
-            })
-        
-        # Move to next tab (round-robin)
-        tab_index = (tab_index + 1) % len(handles)
-    
-    print(f"\n✅ Round-robin scraping complete: {len(results)} products processed\n")
-    return results
 
 def main():
-    """
-    Main scraping workflow with tab pool and round-robin interleaving:
-    1. Create single Selenium driver with retry
-    2. Login using that driver
-    3. Capture cookies from logged-in session
-    4. Open 5-tab pool and inject cookies
-    5. Scrape all products using round-robin scheduling across tabs
-    6. Save results to Excel and send email
-    7. Quit driver and cleanup
-    """
     informal_mail = os.getenv("informal_mail")
     driver = None
-    
+
     try:
-        # Send scrape started email
         send_mail(
             informal_mail,
             subject="🚀 Hafele Web Scraping Started",
-            body="The Hafele web scraping process has started with 5-tab pool optimization. You will receive another email when it completes."
+            body="Scraping started with 5-tab pool optimisation. Another email will follow on completion.",
         )
     except Exception as e:
         print(f"❌ Error sending start email: {e}")
-    
+
     try:
-        # Create Selenium driver with robust retry
+        # ── Driver + login ────────────────────────────────────────────────────
         print("\n📱 Creating Selenium driver...\n")
         driver = make_driver()
-        
-        # Login using the driver
+
         print("\n🔐 Logging in...\n")
         login.handle_login(driver=driver)
-        
-        # ====================================================================
-        # STEP 1: Capture cookies from logged-in session
-        # ====================================================================
+
+        # ── Capture cookies ───────────────────────────────────────────────────
         print("\n🍪 Capturing login cookies...\n")
         cookies = driver.get_cookies()
         print(f"✓ Captured {len(cookies)} cookies")
-        
-        # ====================================================================
-        # STEP 3: Open 5-tab pool with cookie injection
-        # ====================================================================
-        base_url = "https://www.hafele.com.tr/"
-        tab_handles = open_tab_pool(driver, n_tabs=5, base_url=base_url, cookies=cookies)
-        
-        # Load product codes
-        df = pd.read_excel(INPUT_FILE)
+
+        # ── Open tab pool ─────────────────────────────────────────────────────
+        tab_handles = open_tab_pool(
+            driver,
+            n_tabs=5,
+            base_url="https://www.hafele.com.tr/",
+            cookies=cookies,
+        )
+
+        # ── Load product codes ────────────────────────────────────────────────
+        df          = pd.read_excel(INPUT_FILE)
         stock_codes = df["stockCode"].tolist()
-        
-        base_url_products = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
-        product_urls = [(f"{base_url_products}?SKU={code.replace('.', '')}&ProductQuantity=20000", code) for code in stock_codes]
-        
-        # ====================================================================
-        # STEP 4: Scrape using round-robin tab pool with Cloudflare detection
-        # ====================================================================
+
+        product_urls = [
+            (f"{BASE_PRODUCT_URL}?SKU={code.replace('.', '')}&ProductQuantity=20000", code)
+            for code in stock_codes
+        ]
+
+        # ── Scrape ────────────────────────────────────────────────────────────
         results = scrape_with_tab_pool(
             driver=driver,
             handles=tab_handles,
             product_urls=product_urls,
-            base_interval=1.0,
-            jitter=(0.2, 0.9)
         )
 
-        # Save results to Excel
+        # ── Save to Excel ─────────────────────────────────────────────────────
         if os.path.exists(OUTPUT_FILE):
             os.remove(OUTPUT_FILE)
 
         output_data = pd.DataFrame(results)
-        # Move stockCode column to the leftmost position
-        cols = output_data.columns.tolist()
-        if "stockCode" in cols:
-            cols.remove("stockCode")
-            cols = ["stockCode"] + cols
+        if "stockCode" in output_data.columns:
+            cols = ["stockCode"] + [c for c in output_data.columns if c != "stockCode"]
             output_data = output_data[cols]
+
         output_data.to_excel(OUTPUT_FILE, index=False)
         print(f"✅ Results saved to {OUTPUT_FILE}")
 
-        email = os.getenv("gmail_receiver_email_2")
-        email_2 = os.getenv("gmail_receiver_email")
-      
-        try:
-            send_mail_with_excel(email, OUTPUT_FILE)
-            send_mail_with_excel(email_2, OUTPUT_FILE)
-            print(f"📧 Email sent to {email} and {email_2}")
-        except Exception as e:
-            print(f"❌ Error sending email: {e}")
+        # ── Send results email ────────────────────────────────────────────────
+        failed_count = int((output_data["stok_durumu"] == FETCH_FAILED).sum())
+        total_count  = len(output_data)
 
-        # Send scrape finished email
+        for recipient in [os.getenv("gmail_receiver_email_2"), os.getenv("gmail_receiver_email")]:
+            try:
+                send_mail_with_excel(recipient, OUTPUT_FILE)
+                print(f"📧 Email sent to {recipient}")
+            except Exception as e:
+                print(f"❌ Failed to send email to {recipient}: {e}")
+
         try:
             send_mail(
                 informal_mail,
                 subject="✅ Hafele Web Scraping Completed",
-                body="The Hafele web scraping process has completed successfully using the 5-tab pool with round-robin scheduling. Results have been saved and sent to the recipients."
+                body=(
+                    f"Scraping completed.\n\n"
+                    f"Total products : {total_count}\n"
+                    f"Permanent fails: {failed_count}\n\n"
+                    f"Failures are marked '{FETCH_FAILED}' in the Excel file."
+                ),
             )
         except Exception as e:
             print(f"❌ Error sending completion email: {e}")
 
-        print(f"\n✅ Scraping complete. Process will exit now.\n")
-    
     except Exception as e:
-        # Send error email with exception message
-        error_body = f"The Hafele web scraping process encountered an error:\n\nException: {str(e)}"
         try:
             send_mail(
                 informal_mail,
                 subject="❌ Hafele Web Scraping Failed",
-                body=error_body
+                body=f"Scraping failed.\n\nException: {e}",
             )
-        except Exception as email_error:
-            print(f"❌ Error sending error email: {email_error}")
-        
-        print(f"❌ Error during scraping: {e}")
+        except Exception:
+            pass
+        print(f"❌ Fatal error: {e}")
         raise
+
     finally:
-        # Always quit driver
         if driver:
             try:
                 driver.quit()
-                print("✅ Driver quit successfully")
+                print("✅ Driver quit")
             except Exception as e:
                 print(f"⚠️ Error quitting driver: {e}")
+
 
 if __name__ == "__main__":
     main()
