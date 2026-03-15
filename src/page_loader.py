@@ -12,6 +12,9 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 CLOUDFLARE_MARKERS = [
     "Just a moment",
@@ -73,17 +76,17 @@ def detect_and_backoff_cloudflare(driver, max_backoff=60):
             return False
 
         backoff_time = random.uniform(20, min(60, max_backoff))
-        print(f"  ⚠ Cloudflare challenge detected! Backing off for {backoff_time:.1f}s...")
+        logger.info(f"  ⚠ Cloudflare challenge detected! Backing off for {backoff_time:.1f}s...")
         time.sleep(backoff_time)
 
         try:
             driver.refresh()
             wait_for_page_ready(driver)
         except Exception as e:
-            print(f"  ⚠ Refresh after Cloudflare backoff failed: {e}")
+            logger.exception(f"  ⚠ Refresh after Cloudflare backoff failed: {e}")
 
         return True
 
     except Exception as e:
-        print(f"  ⚠ Error during Cloudflare detection: {e}")
+        logger.exception(f"  ⚠ Error during Cloudflare detection: {e}")
         return False

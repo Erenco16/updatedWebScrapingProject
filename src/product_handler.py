@@ -13,6 +13,10 @@ from bs4 import BeautifulSoup
 from src.parsers import extract_price_info, extract_product_description
 from src.page_loader import wait_for_element_or_error
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 BASE_PRODUCT_URL = (
     "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY"
     "/ViewProduct-GetPriceAndAvailabilityInformationPDS"
@@ -93,7 +97,7 @@ def _extract_stock(soup: BeautifulSoup):
     stock_amount = None
     stock_status = None
 
-    print("\n🔍 DEBUG: Extracting stock data...\n")
+    logger.info("\n🔍 DEBUG: Extracting stock data...\n")
 
     for row in soup.select("tr.values-tr"):
         qty_el = row.select_one("td.qty-available")
@@ -106,10 +110,10 @@ def _extract_stock(soup: BeautifulSoup):
         availability_text = avail_el.text.strip().lower()
         qty = int(raw_qty) if raw_qty.isdigit() else None
 
-        print(f"  Found stock: {raw_qty}, Status: {availability_text}")
+        logger.info(f"  Found stock: {raw_qty}, Status: {availability_text}")
 
         if "stokta mevcut" in availability_text:
-            print(f"  ✅ Prioritizing 'stokta mevcut' stock: {qty}")
+            logger.info(f"  ✅ Prioritizing 'stokta mevcut' stock: {qty}")
             return qty, "stokta mevcut"
 
         if stock_amount is None:
@@ -121,7 +125,7 @@ def _extract_stock(soup: BeautifulSoup):
         el = soup.select_one("#productAvailabilityInformation .availability-flag")
         stock_status = el.text.strip() if el else "Stok bilgisi bulunamadi"
 
-    print(f"  📌 Final Stock Amount: {stock_amount}, Status: {stock_status}\n")
+    logger.info(f"  📌 Final Stock Amount: {stock_amount}, Status: {stock_status}\n")
     return stock_amount, stock_status
 
 
@@ -148,5 +152,5 @@ def _retrieve_singular_stock(driver, url: str):
         return 0
 
     except Exception as e:
-        print(f"  Error fetching sub-product stock from {url}: {e}")
+        logger.exception(f"  Error fetching sub-product stock from {url}: {e}")
         return None

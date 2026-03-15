@@ -19,6 +19,11 @@ from src.tab_pool import open_tab_pool
 from src.scraper import scrape_with_tab_pool, FETCH_FAILED
 from src.send_mail import send_mail_with_excel, send_mail
 
+from src.util.logger_util import CustomLogger
+
+log_manager = CustomLogger(__name__, log_file="main-file.log")
+logger = log_manager.get_logger()
+
 load_dotenv()
 
 BASE_DIR    = os.path.dirname(__file__)
@@ -42,20 +47,20 @@ def main():
             body="Scraping started with 5-tab pool optimisation. Another email will follow on completion.",
         )
     except Exception as e:
-        print(f"❌ Error sending start email: {e}")
+        logger.exception(f"❌ Error sending start email: {e}")
 
     try:
         # ── Driver + login ────────────────────────────────────────────────────
-        print("\n📱 Creating Selenium driver...\n")
+        logger.info("\n📱 Creating Selenium driver...\n")
         driver = make_driver()
 
-        print("\n🔐 Logging in...\n")
+        logger.info("\n🔐 Logging in...\n")
         login.handle_login(driver=driver)
 
         # ── Capture cookies ───────────────────────────────────────────────────
-        print("\n🍪 Capturing login cookies...\n")
+        logger.info("\n🍪 Capturing login cookies...\n")
         cookies = driver.get_cookies()
-        print(f"✓ Captured {len(cookies)} cookies")
+        logger.info(f"✓ Captured {len(cookies)} cookies")
 
         # ── Open tab pool ─────────────────────────────────────────────────────
         tab_handles = open_tab_pool(
@@ -91,19 +96,21 @@ def main():
             output_data = output_data[cols]
 
         output_data.to_excel(OUTPUT_FILE, index=False)
-        print(f"✅ Results saved to {OUTPUT_FILE}")
+        logger.info(f"✅ Results saved to {OUTPUT_FILE}")
 
         # ── Send results email ────────────────────────────────────────────────
         failed_count = int((output_data["stok_durumu"] == FETCH_FAILED).sum())
         total_count  = len(output_data)
 
-        for recipient in [os.getenv("gmail_receiver_email_2"), os.getenv("gmail_receiver_email")]:
-            try:
-                send_mail_with_excel(recipient, OUTPUT_FILE)
-                print(f"📧 Email sent to {recipient}")
-            except Exception as e:
-                print(f"❌ Failed to send email to {recipient}: {e}")
+        # for recipient in [os.getenv("gmail_receiver_email_2"), os.getenv("gmail_receiver_email")]:
+        #     try:
+        #         send_mail_with_excel(recipient, OUTPUT_FILE)
+        #         logger.info(f"📧 Email sent to {recipient}")
+        #     except Exception as e:
+        #         logger.exception(f"❌ Failed to send email to {recipient}: {e}")
 
+        send_mail_with_excel(informal_mail, OUTPUT_FILE)
+        
         try:
             send_mail(
                 informal_mail,
@@ -116,7 +123,7 @@ def main():
                 ),
             )
         except Exception as e:
-            print(f"❌ Error sending completion email: {e}")
+            logger.exception(f"❌ Error sending completion email: {e}")
 
     except Exception as e:
         try:
@@ -127,16 +134,16 @@ def main():
             )
         except Exception:
             pass
-        print(f"❌ Fatal error: {e}")
+        logger.exception(f"❌ Fatal error: {e}")
         raise
 
     finally:
         if driver:
             try:
                 driver.quit()
-                print("✅ Driver quit")
+                logger.info("✅ Driver quit")
             except Exception as e:
-                print(f"⚠️ Error quitting driver: {e}")
+                logger.exception(f"⚠️ Error quitting driver: {e}")
 
 
 if __name__ == "__main__":

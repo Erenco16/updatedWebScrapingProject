@@ -36,5 +36,5 @@ services:
       - .env
     environment:
       - GRID_URL=http://selenium-hub:4444/wd/hub
-      - PRODUCT_CODE=545.02.532
+      - PRODUCT_CODE=545.70.736
     command: [ "python", "-m", "tests.test" ] 

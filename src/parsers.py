@@ -10,6 +10,10 @@ No Selenium or I/O here — pure BeautifulSoup parsing logic.
 
 from bs4 import BeautifulSoup
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 FETCH_FAILED = "FETCH_FAILED"
 
 
@@ -34,7 +38,7 @@ def extract_price_info(soup: BeautifulSoup) -> dict:
     }
 
     if any(v == FETCH_FAILED for v in result.values()):
-        print(f"  ⚠ Only {len(prices)} price element(s) found — page may have loaded partially")
+        logger.info(f"  ⚠ Only {len(prices)} price element(s) found — page may have loaded partially")
 
     return result
 
@@ -50,23 +54,23 @@ def extract_product_description(soup: BeautifulSoup) -> str:
     try:
         container = _find_properties_container(soup)
         if not container:
-            print("⚠️ Could not find properties container")
+            logger.warning("⚠️ Could not find properties container")
             return "No description available"
 
         sections = container.find_all("div", class_="productPropertiesSection")
         if not sections:
-            print("⚠️ Could not find product property sections")
+            logger.warning("⚠️ Could not find product property sections")
             return "No description available"
 
         parsed = _parse_sections(sections)
         if not parsed:
-            print("⚠️ No sections extracted")
+            logger.warning("⚠️ No sections extracted")
             return "No description available"
 
         return _build_html(parsed)
 
     except Exception as e:
-        print(f"Error extracting product description: {e}")
+        logger.exception(f"Error extracting product description: {e}")
         import traceback
         traceback.print_exc()
         return "No description available"
