@@ -14,6 +14,11 @@ import random
 from collections import deque
 from bs4 import BeautifulSoup
 
+from src.util.logger_util import CustomLogger
+
+log_manager = CustomLogger(__name__, log_file="scraper.log")
+logger = log_manager.get_logger()
+
 from src.page_loader import (
     wait_for_page_ready,
     wait_for_element_or_error,
@@ -64,7 +69,7 @@ def retrieve_product_data(driver, url: str, code: str, retries: int = 3) -> dict
     """
     for attempt in range(retries):
         try:
-            print(f"  Navigating to {url} (attempt {attempt + 1}/{retries})")
+            logger.info(f"  Navigating to {url} (attempt {attempt + 1}/{retries})")
             driver.get(url)
             wait_for_page_ready(driver)
 
@@ -79,12 +84,12 @@ def retrieve_product_data(driver, url: str, code: str, retries: int = 3) -> dict
             # Product not found
             error_el = soup.find("p", class_="headlineStyle4")
             if error_el and f"{code} için aramanız başarısız oldu." in error_el.text:
-                print(f"  ⚠ Product {code} not found on hafele.com.tr")
+                logger.warning(f"  ⚠ Product {code} not found on hafele.com.tr")
                 return dict(_NOT_FOUND_RESULT)
 
             # Validate partial load — retry if no prices in DOM yet
             if not soup.select("span.price"):
-                print(f"  ⚠ No price elements on attempt {attempt + 1} — retrying...")
+                logger.warning(f"  ⚠ No price elements on attempt {attempt + 1} — retrying...")
                 time.sleep(2 ** attempt)
                 continue
 
@@ -95,10 +100,10 @@ def retrieve_product_data(driver, url: str, code: str, retries: int = 3) -> dict
                 return handle_singular_product(soup, search_soup=soup)
 
         except Exception as e:
-            print(f"  Error on attempt {attempt + 1}/{retries} for {code}: {e}")
+            logger.exception(f"  Error on attempt {attempt + 1}/{retries} for {code}: {e}")
             time.sleep(2 ** attempt)
 
-    print(f"  ❌ Exhausted retries for {code}")
+    logger.exception(f"  ❌ Exhausted retries for {code}")
     return dict(_FAILED_RESULT)
 
 
@@ -128,7 +133,7 @@ def scrape_with_tab_pool(
     total     = len(product_urls)
     processed = 0
 
-    print(f"\n🔄 Round-robin scrape — {len(handles)} tabs, {total} products\n")
+    logger.info(f"\n🔄 Round-robin scrape — {len(handles)} tabs, {total} products\n")
 
     # ── Main pass ─────────────────────────────────────────────────────────────
     while queue:
@@ -137,14 +142,14 @@ def scrape_with_tab_pool(
 
         try:
             driver.switch_to.window(handles[tab_index])
-            print(f"[{processed}/{total}] Tab #{tab_index + 1} → {code}")
+            logger.info(f"[{processed}/{total}] Tab #{tab_index + 1} → {code}")
 
             result = retrieve_product_data(driver, url, code)
             result["stockCode"] = code
             results[code] = result
 
         except Exception as e:
-            print(f"  ❌ Unhandled error for {code}: {e}")
+            logger.exception(f"  ❌ Unhandled error for {code}: {e}")
             results[code] = {"stockCode": code, **_FAILED_RESULT}
 
         tab_index = (tab_index + 1) % len(handles)
@@ -156,14 +161,14 @@ def scrape_with_tab_pool(
     ]
 
     if failed:
-        print(f"\n🔁 Retry pass: {len(failed)} failed product(s)...")
+        logger.warning(f"\n🔁 Retry pass: {len(failed)} failed product(s)...")
         driver.switch_to.window(handles[0])
 
         for round_num in range(1, max_final_retries + 1):
             still_failing = []
 
             for url, code in failed:
-                print(f"  Retry {round_num}/{max_final_retries} → {code}")
+                logger.info(f"  Retry {round_num}/{max_final_retries} → {code}")
                 time.sleep(random.uniform(3, 6))
 
                 result = retrieve_product_data(driver, url, code, retries=2)
@@ -175,18 +180,18 @@ def scrape_with_tab_pool(
 
             failed = still_failing
             if not failed:
-                print("  ✅ All previously failed products resolved.")
+                logger.info("  ✅ All previously failed products resolved.")
                 break
-            print(f"  ⚠ {len(failed)} still failing after retry round {round_num}")
+            logger.exception(f"  ⚠ {len(failed)} still failing after retry round {round_num}")
 
     if failed:
-        print(f"\n⚠ Permanent failures ({len(failed)}):")
+        logger.info(f"\n⚠ Permanent failures ({len(failed)}):")
         for _, code in failed:
-            print(f"   - {code}")
+            logger.info(f"   - {code}")
 
     # Restore original input order
     ordered = [results[code] for _, code in product_urls if code in results]
-    print(f"\n✅ Scrape complete — {len(ordered)} products, {len(failed)} permanent failures\n")
+    logger.info(f"\n✅ Scrape complete — {len(ordered)} products, {len(failed)} permanent failures\n")
     return ordered
 
 
@@ -204,7 +209,7 @@ def does_product_exist(driver, code: str):
         "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY"
         f"/ViewParametricSearch-SimpleOfferSearch?SearchType=all&SearchTerm={code}"
     )
-    print(f"  Checking existence of {code} via search...")
+    logger.info(f"  Checking existence of {code} via search...")
     driver.get(url)
     wait_for_element_or_error(driver)
 

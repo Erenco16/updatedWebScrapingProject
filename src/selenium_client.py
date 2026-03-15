@@ -4,6 +4,11 @@ import time
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 
+from src.util.logger_util import CustomLogger
+
+log_manager = CustomLogger(__name__, log_file="selenium-client.log")
+logger = log_manager.get_logger()
+
 def make_driver(retries=10, retry_delay=2):
     """
     Create a Selenium WebDriver connected to Selenium Grid with robust retry logic.
@@ -35,14 +40,14 @@ def make_driver(retries=10, retry_delay=2):
     # Retry loop to handle Grid startup race conditions
     for attempt in range(retries):
         try:
-            print(f"Attempting to create Selenium driver (attempt {attempt + 1}/{retries})...")
+            logger.info(f"Attempting to create Selenium driver (attempt {attempt + 1}/{retries})...")
             driver = webdriver.Remote(command_executor=grid_url, options=options)
-            print(f"✅ Successfully created Selenium driver")
+            logger.info(f"✅ Successfully created Selenium driver")
             return driver
         except Exception as e:
-            print(f"❌ Attempt {attempt + 1} failed: {e}")
+            logger.exception(f"❌ Attempt {attempt + 1} failed: {e}")
             if attempt < retries - 1:
-                print(f"⏳ Waiting {retry_delay}s before retry...")
+                logger.info(f"⏳ Waiting {retry_delay}s before retry...")
                 time.sleep(retry_delay)
             else:
                 raise RuntimeError(

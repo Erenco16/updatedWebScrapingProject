@@ -4,6 +4,11 @@ from email.message import EmailMessage
 import os
 from dotenv import load_dotenv
 
+from src.util.logger_util import CustomLogger
+
+log_manager = CustomLogger(__name__, log_file="send-mail.log")
+logger = log_manager.get_logger()
+
 load_dotenv()
 
 
@@ -21,7 +26,7 @@ def send_mail(recipient_email, subject, body):
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
         smtp.login(sender_email, app_password)
         smtp.send_message(msg)
-        print(f"✅ Email sent to {recipient_email}")
+        logger.info(f"✅ Email sent to {recipient_email}")
 
 
 def send_mail_with_excel(recipient_email, excel_file):
@@ -48,7 +53,7 @@ def send_mail_with_excel(recipient_email, excel_file):
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
         smtp.login(sender_email, app_password)
         smtp.send_message(msg)
-        print("Done!")
+        logger.info("Done!")
 
 
 if __name__ == "__main__":
