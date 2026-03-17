@@ -30,6 +30,7 @@ def apply_cookies_to_tab(driver, base_url="https://www.hafele.com.tr/", cookies=
         cookies = []
 
     logger.info(f"  Navigating to {base_url} to inject cookies...")
+    logger.info(f"  Navigating to {base_url} to inject cookies...")
     driver.get(base_url)
     wait_for_page_ready(driver)
 
@@ -41,12 +42,15 @@ def apply_cookies_to_tab(driver, base_url="https://www.hafele.com.tr/", cookies=
                 c.pop(key, None)
             driver.add_cookie(c)
             logger.info(f"  ✓ Added cookie: {c.get('name', 'unknown')}")
+            logger.info(f"  ✓ Added cookie: {c.get('name', 'unknown')}")
         except Exception as e:
+            logger.exception(f"  ⚠ Failed to add cookie '{cookie.get('name', 'unknown')}': {e}")
             logger.exception(f"  ⚠ Failed to add cookie '{cookie.get('name', 'unknown')}': {e}")
 
     time.sleep(0.5)
     driver.refresh()
     wait_for_page_ready(driver)
+    logger.info("  ✓ Cookies injected and page refreshed")
     logger.info("  ✓ Cookies injected and page refreshed")
 
 
@@ -71,15 +75,18 @@ def open_tab_pool(driver, n_tabs=5, base_url="https://www.hafele.com.tr/", cooki
 
     handles = []
     logger.info(f"\n📑 Opening tab pool with {n_tabs} tabs...")
+    logger.info(f"\n📑 Opening tab pool with {n_tabs} tabs...")
 
     try:
         # First tab: already open, just inject cookies
+        logger.info("\nTab 1 (current):")
         logger.info("\nTab 1 (current):")
         apply_cookies_to_tab(driver, base_url, cookies)
         handles.append(driver.current_window_handle)
 
         # Remaining tabs: open new, switch to it, inject cookies
         for i in range(1, n_tabs):
+            logger.info(f"\nTab {i + 1} (new):")
             logger.info(f"\nTab {i + 1} (new):")
             driver.execute_script("window.open('');")
             time.sleep(1)
@@ -88,8 +95,10 @@ def open_tab_pool(driver, n_tabs=5, base_url="https://www.hafele.com.tr/", cooki
             handles.append(driver.current_window_handle)
 
         logger.info(f"\n✅ Tab pool ready — {len(handles)} tabs\n")
+        logger.info(f"\n✅ Tab pool ready — {len(handles)} tabs\n")
         return handles
 
     except Exception as e:
+        logger.exception(f"\n❌ Error creating tab pool: {e}")
         logger.exception(f"\n❌ Error creating tab pool: {e}")
         raise

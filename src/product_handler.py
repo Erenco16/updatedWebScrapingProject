@@ -99,6 +99,7 @@ def _extract_stock(soup: BeautifulSoup):
     stock_status = None
 
     logger.info("\n🔍 DEBUG: Extracting stock data...\n")
+    logger.info("\n🔍 DEBUG: Extracting stock data...\n")
 
     for row in soup.select("tr.values-tr"):
         qty_el = row.select_one("td.qty-available")
@@ -112,8 +113,10 @@ def _extract_stock(soup: BeautifulSoup):
         qty = int(raw_qty) if raw_qty.isdigit() else None
 
         logger.info(f"  Found stock: {raw_qty}, Status: {availability_text}")
+        logger.info(f"  Found stock: {raw_qty}, Status: {availability_text}")
 
         if "stokta mevcut" in availability_text:
+            logger.info(f"  ✅ Prioritizing 'stokta mevcut' stock: {qty}")
             logger.info(f"  ✅ Prioritizing 'stokta mevcut' stock: {qty}")
             return qty, "stokta mevcut"
 
@@ -126,6 +129,7 @@ def _extract_stock(soup: BeautifulSoup):
         el = soup.select_one("#productAvailabilityInformation .availability-flag")
         stock_status = el.text.strip() if el else "Stok bilgisi bulunamadi"
 
+    logger.info(f"  📌 Final Stock Amount: {stock_amount}, Status: {stock_status}\n")
     logger.info(f"  📌 Final Stock Amount: {stock_amount}, Status: {stock_status}\n")
     return stock_amount, stock_status
 
@@ -153,5 +157,6 @@ def _retrieve_singular_stock(driver, url: str):
         return 0
 
     except Exception as e:
+        logger.exception(f"  Error fetching sub-product stock from {url}: {e}")
         logger.exception(f"  Error fetching sub-product stock from {url}: {e}")
         return None

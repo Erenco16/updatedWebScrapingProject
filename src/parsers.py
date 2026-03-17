@@ -40,6 +40,7 @@ def extract_price_info(soup: BeautifulSoup) -> dict:
 
     if any(v == FETCH_FAILED for v in result.values()):
         logger.info(f"  ⚠ Only {len(prices)} price element(s) found — page may have loaded partially")
+        logger.info(f"  ⚠ Only {len(prices)} price element(s) found — page may have loaded partially")
 
     return result
 
@@ -56,21 +57,25 @@ def extract_product_description(soup: BeautifulSoup) -> str:
         container = _find_properties_container(soup)
         if not container:
             logger.warning("⚠️ Could not find properties container")
+            logger.warning("⚠️ Could not find properties container")
             return "No description available"
 
         sections = container.find_all("div", class_="productPropertiesSection")
         if not sections:
+            logger.warning("⚠️ Could not find product property sections")
             logger.warning("⚠️ Could not find product property sections")
             return "No description available"
 
         parsed = _parse_sections(sections)
         if not parsed:
             logger.warning("⚠️ No sections extracted")
+            logger.warning("⚠️ No sections extracted")
             return "No description available"
 
         return _build_html(parsed)
 
     except Exception as e:
+        logger.exception(f"Error extracting product description: {e}")
         logger.exception(f"Error extracting product description: {e}")
         import traceback
         traceback.print_exc()

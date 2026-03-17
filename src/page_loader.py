@@ -78,6 +78,7 @@ def detect_and_backoff_cloudflare(driver, max_backoff=60):
 
         backoff_time = random.uniform(20, min(60, max_backoff))
         logger.info(f"  ⚠ Cloudflare challenge detected! Backing off for {backoff_time:.1f}s...")
+        logger.info(f"  ⚠ Cloudflare challenge detected! Backing off for {backoff_time:.1f}s...")
         time.sleep(backoff_time)
 
         try:
@@ -85,9 +86,11 @@ def detect_and_backoff_cloudflare(driver, max_backoff=60):
             wait_for_page_ready(driver)
         except Exception as e:
             logger.exception(f"  ⚠ Refresh after Cloudflare backoff failed: {e}")
+            logger.exception(f"  ⚠ Refresh after Cloudflare backoff failed: {e}")
 
         return True
 
     except Exception as e:
+        logger.exception(f"  ⚠ Error during Cloudflare detection: {e}")
         logger.exception(f"  ⚠ Error during Cloudflare detection: {e}")
         return False

@@ -207,6 +207,7 @@ def download_zip_attachment():
         msg_ids = search_email_ids(mail, criteria)
         if not msg_ids:
             logger.exception("❌ Email not found")
+            logger.exception("❌ Email not found")
             return
         # Build list of candidate messages within the time window and sort newest->oldest
         candidates = []
@@ -217,6 +218,7 @@ def download_zip_attachment():
                 candidates.append((msg_id, dt_utc))
 
         if not candidates:
+            logger.exception(f"❌ No email found within the last {hours_window} hours")
             logger.exception(f"❌ No email found within the last {hours_window} hours")
             return
 
@@ -229,8 +231,10 @@ def download_zip_attachment():
                 msg = fetch_message(mail, msg_id)
             except Exception as e:
                 logger.exception(f"⚠️ Failed to fetch message {msg_id}: {e}")
+                logger.exception(f"⚠️ Failed to fetch message {msg_id}: {e}")
                 continue
 
+            logger.info(f"Checking email id {msg_id} dated {msg_dt} for ZIP attachments...")
             logger.info(f"Checking email id {msg_id} dated {msg_dt} for ZIP attachments...")
             found_zip_in_message = False
 
@@ -242,9 +246,11 @@ def download_zip_attachment():
                 found_zip_in_message = True
                 zip_path = save_attachment(part, zip_filename)
                 logger.info(f"✅ ZIP downloaded: {zip_path} (from message {msg_id})")
+                logger.info(f"✅ ZIP downloaded: {zip_path} (from message {msg_id})")
 
                 try:
                     excel_path = extract_excel_from_zip(zip_path, SAVE_DIR)
+                    logger.info(f"✅ Excel extracted: {excel_path}")
                     logger.info(f"✅ Excel extracted: {excel_path}")
 
                     # Clean up ZIP and mark success
@@ -254,9 +260,11 @@ def download_zip_attachment():
                 except RuntimeError as e:
                     # Specific problem with this ZIP (no excel, or multiple excels) — try previous attachment/email
                     logger.info(f"⚠️ Attachment {zip_path} invalid: {e} — trying previous email/attachment")
+                    logger.info(f"⚠️ Attachment {zip_path} invalid: {e} — trying previous email/attachment")
                     delete_file(zip_path)
                     continue
                 except Exception as e:
+                    logger.info(f"⚠️ Unexpected error extracting {zip_path}: {e} — trying previous email/attachment")
                     logger.info(f"⚠️ Unexpected error extracting {zip_path}: {e} — trying previous email/attachment")
                     delete_file(zip_path)
                     continue
@@ -266,8 +274,10 @@ def download_zip_attachment():
 
             if not found_zip_in_message:
                 logger.exception(f"❌ No ZIP attachment found in email id {msg_id} — trying previous email")
+                logger.exception(f"❌ No ZIP attachment found in email id {msg_id} — trying previous email")
 
         if not found_excel:
+            logger.exception("❌ No valid ZIP with Excel found in recent emails")
             logger.exception("❌ No valid ZIP with Excel found in recent emails")
 
     finally:
@@ -342,6 +352,7 @@ def update_product_codes_from_latest_attachment():
     codes = [c for c in codes if not (c in seen or seen.add(c))]
 
     override_stockcode_in_product_codes(codes, "product_codes.xlsx")
+    logger.info(f"✅ Updated 'product_codes.xlsx' stockCode with {len(codes)} codes from: {latest_excel}")
     logger.info(f"✅ Updated 'product_codes.xlsx' stockCode with {len(codes)} codes from: {latest_excel}")
 
 

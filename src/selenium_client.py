@@ -41,12 +41,16 @@ def make_driver(retries=10, retry_delay=2):
     for attempt in range(retries):
         try:
             logger.info(f"Attempting to create Selenium driver (attempt {attempt + 1}/{retries})...")
+            logger.info(f"Attempting to create Selenium driver (attempt {attempt + 1}/{retries})...")
             driver = webdriver.Remote(command_executor=grid_url, options=options)
+            logger.info(f"✅ Successfully created Selenium driver")
             logger.info(f"✅ Successfully created Selenium driver")
             return driver
         except Exception as e:
             logger.exception(f"❌ Attempt {attempt + 1} failed: {e}")
+            logger.exception(f"❌ Attempt {attempt + 1} failed: {e}")
             if attempt < retries - 1:
+                logger.info(f"⏳ Waiting {retry_delay}s before retry...")
                 logger.info(f"⏳ Waiting {retry_delay}s before retry...")
                 time.sleep(retry_delay)
             else:

@@ -27,6 +27,7 @@ def send_mail(recipient_email, subject, body):
         smtp.login(sender_email, app_password)
         smtp.send_message(msg)
         logger.info(f"✅ Email sent to {recipient_email}")
+        logger.info(f"✅ Email sent to {recipient_email}")
 
 
 def send_mail_with_excel(recipient_email, excel_file):
@@ -53,6 +54,7 @@ def send_mail_with_excel(recipient_email, excel_file):
     with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
         smtp.login(sender_email, app_password)
         smtp.send_message(msg)
+        logger.info("Done!")
         logger.info("Done!")
 
 
