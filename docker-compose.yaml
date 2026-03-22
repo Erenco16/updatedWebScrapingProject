@@ -38,7 +38,6 @@ services:
       - GRID_URL=http://selenium-hub:4444/wd/hub
     volumes:
       - ./src/input:/src/input
-      - ./logs:/app/src/util/logs
     command: [ "python", "-m", "src.input.send_product_code_mail" ]
 
   webscrape:
