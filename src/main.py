@@ -15,9 +15,8 @@ from dotenv import load_dotenv
 
 from src import login
 from src.selenium_client import make_driver
-from src.tab_pool import open_tab_pool
-from src.scraper import scrape_with_tab_pool, FETCH_FAILED
 from src.send_mail import send_mail_with_excel, send_mail
+from src.scraper import retrieve_product_data
 
 from src.util.logger_util import CustomLogger
 
@@ -37,113 +36,113 @@ BASE_PRODUCT_URL = (
 
 
 def main():
+    """
+    Main scraping workflow:
+    1. Create single Selenium driver with retry
+    2. Login using that driver
+    3. Scrape all products using browser navigation
+    4. Quit driver and cleanup
+    """
     informal_mail = os.getenv("informal_mail")
     driver = None
-
+    
     try:
+        # Send scrape started email
         send_mail(
             informal_mail,
             subject="🚀 Hafele Web Scraping Started",
-            body="Scraping started with 5-tab pool optimisation. Another email will follow on completion.",
+            body="The Hafele web scraping process has started. You will receive another email when it completes."
         )
     except Exception as e:
         logger.exception(f"❌ Error sending start email: {e}")
-
+    
     try:
-        # ── Driver + login ────────────────────────────────────────────────────
-        logger.info("\n📱 Creating Selenium driver...\n")
+        # Create Selenium driver with robust retry (replaces /status polling)
+        logger.debug("\n📱 Creating Selenium driver...\n")
         driver = make_driver()
-
-        logger.info("\n🔐 Logging in...\n")
+        
+        # Login using the driver
+        logger.debug("\n🔐 Logging in...\n")
         login.handle_login(driver=driver)
-
-        # ── Capture cookies ───────────────────────────────────────────────────
-        logger.info("\n🍪 Capturing login cookies...\n")
-        cookies = driver.get_cookies()
-        logger.info(f"✓ Captured {len(cookies)} cookies")
-
-        # ── Open tab pool ─────────────────────────────────────────────────────
-        tab_handles = open_tab_pool(
-            driver,
-            n_tabs=5,
-            base_url="https://www.hafele.com.tr/",
-            cookies=cookies,
-        )
-
-        # ── Load product codes ────────────────────────────────────────────────
-        df          = pd.read_excel(INPUT_FILE)
+        
+        # Load product codes - pick 200 random ones
+        df = pd.read_excel(INPUT_FILE)
         stock_codes = df["stockCode"].tolist()
+        
+        base_url = "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS"
+        product_urls = [(f"{base_url}?SKU={code.replace('.', '')}&ProductQuantity=20000", code) for code in stock_codes]
 
-        product_urls = [
-            (f"{BASE_PRODUCT_URL}?SKU={code.replace('.', '')}&ProductQuantity=20000", code)
-            for code in stock_codes
-        ]
+        # Scrape all products using Selenium
+        results = []
+        for url, code in product_urls:
+            try:
+                logger.debug(f"Scraping data for stock code {code}...")
+                result = retrieve_product_data(driver=driver, url=url, code=code)
+                result["stockCode"] = code
+                results.append(result)
+            except Exception as e:
+                logger.exception(f"Error processing stock code {code}: {e}")
+                results.append({"stockCode": code, "stok_durumu": f"Error: {e}", "stock_amount": None})
 
-        # ── Scrape ────────────────────────────────────────────────────────────
-        results = scrape_with_tab_pool(
-            driver=driver,
-            handles=tab_handles,
-            product_urls=product_urls,
-        )
-
-        # ── Save to Excel ─────────────────────────────────────────────────────
+        # Save results to Excel
         if os.path.exists(OUTPUT_FILE):
             os.remove(OUTPUT_FILE)
 
         output_data = pd.DataFrame(results)
-        if "stockCode" in output_data.columns:
-            cols = ["stockCode"] + [c for c in output_data.columns if c != "stockCode"]
+        # Move stockCode column to the leftmost position
+        cols = output_data.columns.tolist()
+        if "stockCode" in cols:
+            cols.remove("stockCode")
+            cols = ["stockCode"] + cols
             output_data = output_data[cols]
-
         output_data.to_excel(OUTPUT_FILE, index=False)
-        logger.info(f"✅ Results saved to {OUTPUT_FILE}")
+        logger.debug(f"✅ Results saved to {OUTPUT_FILE}")
 
-        # ── Send results email ────────────────────────────────────────────────
-        failed_count = int((output_data["stok_durumu"] == FETCH_FAILED).sum())
-        total_count  = len(output_data)
+        email = os.getenv("gmail_receiver_email_2")
+        email_2 = os.getenv("gmail_receiver_email")
+      
+        try:
+            # send_mail_with_excel(email, OUTPUT_FILE)
+            # send_mail_with_excel(email_2, OUTPUT_FILE)
+            send_mail_with_excel(informal_mail, OUTPUT_FILE)
+            logger.debug(f"📧 Email sent to {email} and {email_2}")
+        except Exception as e:
+            logger.debug(f"❌ Error sending email: {e}")
 
-        # for recipient in [os.getenv("gmail_receiver_email_2"), os.getenv("gmail_receiver_email")]:
-        #     try:
-        #         send_mail_with_excel(recipient, OUTPUT_FILE)
-        #         logger.info(f"📧 Email sent to {recipient}")
-        #     except Exception as e:
-        #         logger.exception(f"❌ Failed to send email to {recipient}: {e}")
-
-        send_mail_with_excel(informal_mail, OUTPUT_FILE)
-        
+        # Send scrape finished email
         try:
             send_mail(
                 informal_mail,
                 subject="✅ Hafele Web Scraping Completed",
-                body=(
-                    f"Scraping completed.\n\n"
-                    f"Total products : {total_count}\n"
-                    f"Permanent fails: {failed_count}\n\n"
-                    f"Failures are marked '{FETCH_FAILED}' in the Excel file."
-                ),
+                body="The Hafele web scraping process has completed successfully. Results have been saved and sent to the recipients."
             )
         except Exception as e:
-            logger.exception(f"❌ Error sending completion email: {e}")
+            logger.debug(f"❌ Error sending completion email: {e}")
 
+        logger.debug(f"\n✅ Scraping complete. Process will exit now.\n")
+    
     except Exception as e:
+        # Send error email with exception message
+        error_body = f"The Hafele web scraping process encountered an error:\n\nException: {str(e)}"
         try:
             send_mail(
                 informal_mail,
                 subject="❌ Hafele Web Scraping Failed",
-                body=f"Scraping failed.\n\nException: {e}",
+                body=error_body
             )
-        except Exception:
-            pass
-        logger.exception(f"❌ Fatal error: {e}")
+        except Exception as email_error:
+            logger.debug(f"❌ Error sending error email: {email_error}")
+        
+        logger.debug(f"❌ Error during scraping: {e}")
         raise
-
     finally:
+        # Always quit driver
         if driver:
             try:
                 driver.quit()
-                logger.info("✅ Driver quit")
+                logger.debug("✅ Driver quit successfully")
             except Exception as e:
-                logger.exception(f"⚠️ Error quitting driver: {e}")
+                logger.debug(f"⚠️ Error quitting driver: {e}")
 
 
 if __name__ == "__main__":
