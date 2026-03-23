@@ -56,7 +56,6 @@ def handle_login(driver=None):
         driver.execute_script("arguments[0].click();", element)
     except Exception as e:
         logger.exception(f"Warning page close failed: {e}")
-        logger.exception(f"Warning page close failed: {e}")
 
     # Handle login
     login_header = driver.find_element(By.ID, "headerLoginLinkAction")
@@ -72,7 +71,6 @@ def handle_login(driver=None):
         checkbox = driver.find_element(By.ID, "divShopLoginForm_RememberLogin_headerItemLogin")
         checkbox.click()
     except Exception as e:
-        logger.exception(f"Checkbox click failed: {e}")
         logger.exception(f"Checkbox click failed: {e}")
 
     time.sleep(2)
@@ -90,15 +88,14 @@ def handle_login(driver=None):
 
     # Save cookies after logging in
     try:
+        cookies = driver.get_cookies()
         with open(cookie_file_path, "wb") as file:
-            logger.info(driver.get_cookies())
-            logger.info(driver.get_cookies())
-            pickle.dump(driver.get_cookies(), file)
+            logger.info(cookies)
+            pickle.dump(cookies, file)
         # Save the user agent
         with open(user_agent_file, "w") as file:
             file.write(options.arguments[-1].split("=")[-1])
     except Exception as e:
-        logger.exception(f"Failed to save cookies: {e}")
         logger.exception(f"Failed to save cookies: {e}")
 
     # Save session information from localStorage
@@ -112,7 +109,6 @@ def handle_login(driver=None):
                 file.flush()  # Ensure the data is written to disk
                 os.fsync(file.fileno())  # Force the OS to flush the file
     except Exception as e:
-        logger.exception(f"Failed to save session info: {e}")
         logger.exception(f"Failed to save session info: {e}")
     
     return driver

@@ -37,9 +37,8 @@ def retrieve_product_data(driver, url, code, retries=3):
         try:
             logger.debug(f"Navigating to URL: {url}")
             driver.get(url)
-            time.sleep(3)  # Wait for page to load
-            
-            html = driver.page_source
+            html = wait_for_element_or_error(driver)
+            detect_and_backoff_cloudflare(driver)
             soup = BeautifulSoup(html, "html.parser")
             
             exists, search_soup = does_product_exist(driver, code=code)
@@ -84,8 +83,7 @@ def does_product_exist(driver, code):
     url = f"https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewParametricSearch-SimpleOfferSearch?SearchType=all&SearchTerm={code}"
     try:
         driver.get(url)
-        time.sleep(2)  # Wait for page to load
-        html = driver.page_source
+        html = wait_for_element_or_error(driver)
         soup = BeautifulSoup(html, "html.parser")
         logger.debug(f"Search URL: {url}")
         

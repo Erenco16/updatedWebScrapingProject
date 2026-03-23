@@ -87,8 +87,7 @@ def retrieve_singular_stock(driver, url):
     """Fetch singular stock information using Selenium."""
     try:
         driver.get(url)
-        time.sleep(2)  # Wait for page to load
-        html = driver.page_source
+        html = wait_for_element_or_error(driver)
         soup = BeautifulSoup(html, "html.parser")
         
         availability_flag = soup.select_one("span.availability-flag[style='color:#339C76']")
