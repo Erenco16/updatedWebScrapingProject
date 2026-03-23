@@ -35,7 +35,7 @@ def retrieve_product_data(driver, url, code, retries=3):
     """
     for attempt in range(retries):
         try:
-            print(f"Navigating to URL: {url}")
+            logger.debug(f"Navigating to URL: {url}")
             driver.get(url)
             time.sleep(3)  # Wait for page to load
             
@@ -60,10 +60,10 @@ def retrieve_product_data(driver, url, code, retries=3):
                     "product_description": "No description available",
                 }
         except Exception as e:
-            print(f"Error retrieving product data (attempt {attempt + 1}): {e}")
+            logger.exception(f"Error retrieving product data (attempt {attempt + 1}): {e}")
             time.sleep(2 ** attempt)  # Exponential backoff
 
-    print(f"Failed to fetch data after {retries} retries for URL: {url}")
+    logger.exception(f"Failed to fetch data after {retries} retries for URL: {url}")
     return {
         "kdv_haric_tavsiye_edilen_perakende_fiyat": None,
         "kdv_haric_net_fiyat": None,
@@ -80,18 +80,18 @@ def does_product_exist(driver, code):
     Check if product exists using Selenium browser navigation.
     Returns (exists: bool, soup: BeautifulSoup)
     """
-    print(f"Checking existence of product {code}...")
+    logger.debug(f"Checking existence of product {code}...")
     url = f"https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewParametricSearch-SimpleOfferSearch?SearchType=all&SearchTerm={code}"
     try:
         driver.get(url)
         time.sleep(2)  # Wait for page to load
         html = driver.page_source
         soup = BeautifulSoup(html, "html.parser")
-        print(f"Search URL: {url}")
+        logger.debug(f"Search URL: {url}")
         
         error_message = soup.find("p", class_="headlineStyle4")
         exists = not (error_message and f"{code} için aramanız başarısız oldu." in error_message.text)
         return exists, soup
     except Exception as e:
-        print(f"Error checking product existence: {e}")
+        logger.debug(f"Error checking product existence: {e}")
         raise
