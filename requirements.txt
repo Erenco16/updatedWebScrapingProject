@@ -1,7 +1,0 @@
-beautifulsoup4
-pandas
-selenium
-python-dotenv
-requests
-openpyxl
-Flask
