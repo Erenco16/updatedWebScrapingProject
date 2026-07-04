@@ -35,6 +35,10 @@ full_run.log
 harvester*.log
 processor*.log
 
+# Per-container log files written by the log-collector sidecar
+logs/*.log
+!logs/.gitkeep
+
 # SQLite databases
 *.db
 *.db-journal

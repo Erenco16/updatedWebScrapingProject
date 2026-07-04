@@ -1,4 +1,112 @@
 services:
+  # ─── Log collector: mounts docker.sock, tails every hafele container to
+  #     a dedicated file under ./logs/. Truncates every file on its own start,
+  #     which happens on every `docker compose up --build`. ───────────────
+  log-collector:
+    image: docker:cli
+    container_name: hafele-log-collector
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./logs:/logs
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        mkdir -p /logs
+        # Reset all container log files on every collector startup
+        rm -f /logs/*.log
+        echo "log-collector: cleared /logs/*.log at $$(date -u +%FT%TZ)"
+        # Track which container we're already following
+        TRACK=/tmp/tailing.list
+        : > "$$TRACK"
+        # Match every container spawned by this compose project + the two
+        # fixed-name infra containers (hafele-redis, selenium-hub).
+        MATCH='^hafele-|^updatedwebscrapingproject-|^selenium-hub$$'
+        while true; do
+          for c in $$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E "$$MATCH" || true); do
+            # skip self
+            [ "$$c" = "hafele-log-collector" ] && continue
+            if ! grep -Fxq "$$c" "$$TRACK" 2>/dev/null; then
+              echo "$$c" >> "$$TRACK"
+              echo "log-collector: following $$c -> /logs/$$c.log"
+              # Truncate the log file, then follow. When the container exits
+              # (or is removed), drop it from the track list so a restart
+              # is re-followed with a fresh log file.
+              ( : > "/logs/$$c.log"
+                docker logs -f "$$c" >> "/logs/$$c.log" 2>&1 || true
+                sed -i "/^$$c$$/d" "$$TRACK"
+                echo "log-collector: $$c stream ended" >> "/logs/$$c.log"
+              ) &
+            fi
+          done
+          sleep 3
+        done
+
+  # ─── Queue watchdog: if processors exit while `hafele:api_urls` still has
+  #     work, restart the exited processor containers so they resume draining.
+  #     When the queue is empty and every processor has exited cleanly, it
+  #     also promotes the reporter from `Created` to running (a workaround
+  #     for `docker compose up -d` not honouring `service_completed_successfully`
+  #     after the initial start). ───────────────────────────────────────────
+  queue-watchdog:
+    image: docker:cli
+    container_name: hafele-queue-watchdog
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - REDIS_QUEUE_KEY=hafele:api_urls
+      - POLL_INTERVAL=30
+      - RESTART_COOLDOWN=60
+    command:
+      - sh
+      - -c
+      - |
+        set -u
+        Q="$${REDIS_QUEUE_KEY:-hafele:api_urls}"
+        INTERVAL="$${POLL_INTERVAL:-30}"
+        COOLDOWN="$${RESTART_COOLDOWN:-60}"
+        LAST_RESTART=0
+        echo "watchdog: watching '$$Q' every $${INTERVAL}s (cooldown $${COOLDOWN}s)"
+        while true; do
+          sleep "$$INTERVAL"
+          NOW=$$(date +%s)
+          # Wait for harvester to finish before intervening
+          HSTATUS=$$(docker exec hafele-redis redis-cli GET hafele:harvester:status 2>/dev/null || true)
+          if [ "$$HSTATUS" != "done" ]; then
+            continue
+          fi
+          QLEN=$$(docker exec hafele-redis redis-cli LLEN "$$Q" 2>/dev/null || echo 0)
+          RUNNING=$$(docker ps --filter 'name=updatedwebscrapingproject-processor-' --format '{{.Names}}' | wc -l | tr -d ' ')
+          EXITED=$$(docker ps -a --filter 'name=updatedwebscrapingproject-processor-' --filter 'status=exited' --format '{{.Names}}')
+          # Case 1: queue has work but no processors are running -> restart exited ones
+          if [ "$$QLEN" -gt 0 ] && [ "$$RUNNING" -eq 0 ] && [ -n "$$EXITED" ]; then
+            if [ $$(( NOW - LAST_RESTART )) -ge "$$COOLDOWN" ]; then
+              COUNT=$$(echo "$$EXITED" | grep -c . || true)
+              echo "watchdog: queue=$$QLEN running=0 exited=$$COUNT -> restarting"
+              for c in $$EXITED; do
+                docker start "$$c" >/dev/null 2>&1 && echo "watchdog:   restarted $$c"
+              done
+              LAST_RESTART=$$NOW
+            else
+              echo "watchdog: queue=$$QLEN but in cooldown ($$(( COOLDOWN - (NOW - LAST_RESTART) ))s left)"
+            fi
+          fi
+          # Case 2: queue drained + no processors alive -> kick the reporter if it never started
+          if [ "$$QLEN" = "0" ] && [ "$$RUNNING" -eq 0 ]; then
+            REPORTER_STATE=$$(docker inspect hafele-reporter --format '{{.State.Status}}' 2>/dev/null || echo missing)
+            if [ "$$REPORTER_STATE" = "created" ]; then
+              echo "watchdog: queue drained, processors exited, promoting hafele-reporter"
+              docker start hafele-reporter >/dev/null 2>&1 || true
+            fi
+          fi
+        done
+
   redis:
     image: redis:7-alpine
     container_name: hafele-redis
