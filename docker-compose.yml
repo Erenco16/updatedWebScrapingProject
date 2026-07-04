@@ -1,0 +1,106 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: hafele-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  selenium-hub:
+    image: seleniarm/hub:latest
+    container_name: selenium-hub
+    ports:
+      - "4444:4444"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4444/status"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+
+  chrome:
+    image: seleniarm/node-chromium:latest
+    # Scale Chrome nodes to match processor parallelism
+    deploy:
+      replicas: 5
+    depends_on:
+      selenium-hub:
+        condition: service_healthy
+    environment:
+      - SE_EVENT_BUS_HOST=selenium-hub
+      - SE_EVENT_BUS_PUBLISH_PORT=4442
+      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
+
+  # ─── Producer: discovers SKUs and pushes API URLs to Redis ───
+  harvester:
+    build:
+      context: .
+      dockerfile: Dockerfile.harvester
+    container_name: hafele-harvester
+    depends_on:
+      redis:
+        condition: service_healthy
+      selenium-hub:
+        condition: service_healthy
+      chrome:
+        condition: service_started
+    env_file:
+      - .env
+    environment:
+      - GRID_URL=http://selenium-hub:4444/wd/hub
+      - REDIS_URL=redis://hafele-redis:6379
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+    command: ["python", "-m", "spiders.hafele_harvester"]
+
+  # ─── Consumers: 10 replicas that pop from Redis and process ───
+  processor:
+    build:
+      context: .
+      dockerfile: Dockerfile.processor
+    deploy:
+      replicas: 10
+    depends_on:
+      redis:
+        condition: service_healthy
+      harvester:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://hafele-redis:6379
+      - DB_PATH=/app/data/products.db
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./data:/app/data
+    command: ["python", "-m", "scrapy", "crawl", "hafele_processor", "-s", "REDIS_URL=redis://hafele-redis:6379", "-s", "LOG_LEVEL=INFO"]
+
+  # ─── Reporter: generates Excel & sends email after all work is done ───
+  reporter:
+    build:
+      context: .
+      dockerfile: Dockerfile.reporter
+    container_name: hafele-reporter
+    depends_on:
+      processor:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      - DB_PATH=/app/data/products.db
+      - OUTPUT_DIR=/app/data
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+    command: ["python", "-m", "reporter"]
+
+volumes:
+  redis-data:

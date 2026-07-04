@@ -1,0 +1,29 @@
+# ─── Harvester (Producer) ───
+# Needs Selenium to traverse the catalog and bypass Cloudflare
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install Chromium + chromedriver for Selenium
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    chromium \
+    chromium-driver \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Symlink chromedriver for legacy compatibility
+RUN ln -s /usr/bin/chromedriver /usr/local/bin/chromedriver || true
+
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# Copy source code
+COPY src/ /app/src/
+COPY spiders/ /app/spiders/
+COPY database.py /app/database.py
+
+ENV PYTHONUNBUFFERED=1
+ENV GRID_URL=http://selenium-hub:4444/wd/hub
+ENV CODES_FILE=/app/data/product_codes.xlsx
+
+CMD ["python", "-m", "spiders.hafele_harvester"]

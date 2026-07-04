@@ -1,0 +1,11 @@
+scrapy
+scrapy-redis
+beautifulsoup4
+pandas
+openpyxl
+python-dotenv
+requests
+selenium
+redis
+lxml
+scrapy-selenium

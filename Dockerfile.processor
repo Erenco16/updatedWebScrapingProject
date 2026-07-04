@@ -1,0 +1,23 @@
+# ─── Processor (Consumer) ───
+# Lightweight: only Scrapy + BeautifulSoup, no browser needed
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt /app/
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+COPY scrapy.cfg /app/scrapy.cfg
+COPY src/ /app/src/
+COPY spiders/ /app/spiders/
+COPY database.py /app/database.py
+
+ENV PYTHONUNBUFFERED=1
+ENV DB_PATH=/app/data/products.db
+
+# Default command overridden by docker-compose for 10 replicas
+CMD ["scrapy", "crawl", "hafele_processor", "-s", "REDIS_URL=redis://hafele-redis:6379"]

@@ -1,0 +1,74 @@
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+
+# Python virtual environment
+venv/
+env/
+ENV/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Scrapy
+.scrapy/
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Docker
+*.log
+docker_build.log
+docker_run*.log
+docker_test_run.log
+final_run*.log
+full_run.log
+harvester*.log
+processor*.log
+
+# SQLite databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Data output (generated files)
+data/*.xlsx
+data/*.csv
+data/*.json
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Session files
+cookies.pkl
+session_info.json
+user_agent.txt
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Node (if any frontend)
+node_modules/
+
+/data
