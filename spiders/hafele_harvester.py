@@ -7,30 +7,30 @@ Flow:
 3. Fetch sitemap index, extract every unique P-XXXXXX product-master ID
 4. Queue master URLs (ViewProduct-Start?SKU=P-XXXXXX) into Redis
 """
+import glob
 import gzip
-import json
 import os
 import re
 import sys
-import time
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import redis
 import requests
 from dotenv import load_dotenv
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
 
 from database import reset_database
 from spiders.headers import BROWSER_HEADERS, USER_AGENT
+from src.hafele_login import login_and_get_cookies, save_cookies_to_redis
+from src.send_mail import send_mail
+
+DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 
 load_dotenv()
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://hafele-redis:6379")
 REDIS_QUEUE_KEY = "hafele:api_urls"
-REDIS_COOKIES_KEY = "hafele:session:cookies"
 
 GRID_URL = os.getenv("GRID_URL", "http://selenium-hub:4444/wd/hub")
 HAFELE_USERNAME = os.getenv("hafele_username")
@@ -53,22 +53,56 @@ def get_redis():
     return redis.from_url(REDIS_URL, decode_responses=True)
 
 
-def _driver():
-    opts = Options()
-    opts.add_argument("--headless=new")
-    opts.add_argument("--no-sandbox")
-    opts.add_argument("--disable-dev-shm-usage")
-    opts.add_argument("--disable-blink-features=AutomationControlled")
-    opts.add_argument("--window-size=1920,1080")
-    opts.add_argument(f"--user-agent={USER_AGENT}")
-    return webdriver.Remote(command_executor=GRID_URL, options=opts)
+def cleanup_stale_excel_files() -> int:
+    """Remove any .xlsx files left over from previous runs.
+
+    Only the most recent run's Excel should live in `DATA_DIR`. Non-.xlsx
+    inputs (e.g. product_codes.xlsx if it were still used, .gitkeep, etc.)
+    are left alone — we only touch `*_Hafele_Guncel_Stoklar.xlsx` files
+    which are the reporter's output.
+    """
+    if not os.path.isdir(DATA_DIR):
+        return 0
+    pattern = os.path.join(DATA_DIR, "*_Hafele_Guncel_Stoklar.xlsx")
+    removed = 0
+    for path in glob.glob(pattern):
+        try:
+            os.remove(path)
+            print(f"Removed stale Excel: {path}")
+            removed += 1
+        except OSError as e:
+            print(f"Could not remove {path}: {e}")
+    return removed
+
+
+def send_start_notification() -> None:
+    """Send a plain-text 'run started' email to informal_mail (if configured)."""
+    informal_mail = (os.getenv("informal_mail") or "").strip()
+    if not informal_mail:
+        print("informal_mail not set; skipping start notification.")
+        return
+    started = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    body = (
+        "Hafele veri toplama süreci başlatıldı.\n"
+        f"Başlangıç zamanı: {started}\n\n"
+        "The Hafele web scraping process has just started.\n"
+        f"Started at: {started}"
+    )
+    try:
+        send_mail(
+            informal_mail,
+            subject="🚀 Hafele Web Scraping Started",
+            body=body,
+        )
+    except Exception as e:
+        print(f"Could not send start notification: {e}")
 
 
 def login_and_save_cookies(redis_client) -> dict:
-    """Log in to Hafele TR through Grid and store the resulting cookies in Redis.
+    """Log in via Selenium Grid and persist cookies in Redis.
 
-    Returns the harvested cookie dict (name -> value) so the caller can also
-    use them for the sitemap fetch (they help with Cloudflare cf_clearance).
+    Returns the harvested cookie dict so the caller can also use them for
+    the sitemap fetch (helps with Cloudflare cf_clearance).
     """
     if not HAFELE_USERNAME or not HAFELE_PASSWORD:
         raise RuntimeError(
@@ -77,74 +111,17 @@ def login_and_save_cookies(redis_client) -> dict:
         )
 
     print("Logging in via Selenium Grid...")
-    d = _driver()
-    try:
-        d.get(f"{HAFELE_BASE}/")
-        time.sleep(5)
-
-        # OneTrust cookie banner
-        d.execute_script(
-            "var b=document.getElementById('onetrust-accept-btn-handler'); if(b) b.click();"
-        )
-        time.sleep(1)
-
-        # Country modal: click the SECONDARY (stay-here) button, not the primary redirect one
-        d.execute_script(
-            "var b=document.querySelector('a.modal-link.t-btn-secondary,button.modal-link.t-btn-secondary');"
-            " if(b) b.click();"
-        )
-        time.sleep(2)
-
-        # Open header login modal
-        d.execute_script("document.getElementById('headerLoginLinkAction').click();")
-        time.sleep(2)
-
-        d.find_element(By.ID, "ShopLoginForm_Login_headerItemLogin").send_keys(HAFELE_USERNAME)
-        d.find_element(By.ID, "ShopLoginForm_Password_headerItemLogin").send_keys(HAFELE_PASSWORD)
-        try:
-            d.execute_script(
-                "var b=document.getElementById('divShopLoginForm_RememberLogin_headerItemLogin'); if(b) b.click();"
-            )
-        except Exception:
-            pass
-        time.sleep(1)
-
-        d.execute_script(
-            "document.querySelector('button[data-testid=\"ajaxAccountLoginFormBtn\"]').click();"
-        )
-        # Give the ajax login + session hydration time to settle
-        time.sleep(12)
-
-        # Sanity: probe the API in-browser to make sure cookies are logged-in-state
-        probe = d.execute_async_script(
-            "var cb=arguments[arguments.length-1];"
-            "fetch('/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/"
-            "ViewProduct-GetPriceAndAvailabilityInformationPDS?SKU=82645712&ProductQuantity=20000&SynchronizationAjaxToken=1',"
-            "{credentials:'include', headers:{'X-Requested-With':'XMLHttpRequest'}})"
-            ".then(r=>r.text()).then(cb).catch(e=>cb('ERR:'+e));"
-        )
-        logged_in = "values-tr" in (probe or "") or "availability-flag" in (probe or "")
+    cookies, logged_in = login_and_get_cookies(
+        GRID_URL, USER_AGENT, HAFELE_USERNAME, HAFELE_PASSWORD
+    )
+    print(f"Captured {len(cookies)} cookies (logged_in_shape={logged_in})")
+    save_cookies_to_redis(redis_client, cookies, USER_AGENT)
+    if not logged_in:
         print(
-            f"Login probe: response_len={len(probe or '')}, "
-            f"logged_in_shape={logged_in}"
+            "WARNING: probe response does not look logged-in. Downstream API "
+            "responses may still be anonymous. Check credentials / captcha."
         )
-
-        cookies = d.get_cookies()
-        cookie_dict = {c["name"]: c["value"] for c in cookies if c.get("name") and c.get("value") is not None}
-        print(f"Captured {len(cookie_dict)} cookies")
-        redis_client.set(REDIS_COOKIES_KEY, json.dumps(cookie_dict))
-        redis_client.set(REDIS_COOKIES_KEY + ":user_agent", USER_AGENT)
-        if not logged_in:
-            print(
-                "WARNING: probe response does not look logged-in. Downstream API "
-                "responses may still be anonymous. Check credentials / captcha."
-            )
-        return cookie_dict
-    finally:
-        try:
-            d.quit()
-        except Exception:
-            pass
+    return cookies
 
 
 def fetch(url: str, cookies: dict | None = None) -> bytes:
@@ -195,6 +172,8 @@ def main():
     print(f"Cleared old queue: {REDIS_QUEUE_KEY}")
 
     reset_database()
+    cleanup_stale_excel_files()
+    send_start_notification()
 
     try:
         cookies = login_and_save_cookies(redis_client)

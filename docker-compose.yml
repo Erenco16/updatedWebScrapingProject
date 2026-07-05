@@ -169,6 +169,32 @@ services:
       - ./src:/app/src
     command: ["python", "-m", "spiders.hafele_harvester"]
 
+  # ─── Cookie refresher: every 10 min, re-logs in and updates the session
+  #     cookies in Redis. Processors pick them up automatically through
+  #     RedisCookieMiddleware (60s in-process cache) — no restart needed. ─
+  cookie-refresher:
+    build:
+      context: .
+      dockerfile: Dockerfile.harvester
+    container_name: hafele-cookie-refresher
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      selenium-hub:
+        condition: service_healthy
+      chrome:
+        condition: service_started
+      harvester:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      - GRID_URL=http://selenium-hub:4444/wd/hub
+      - REDIS_URL=redis://hafele-redis:6379
+      - COOKIE_REFRESH_INTERVAL=600
+    command: ["python", "-m", "refresh_cookies"]
+
   # ─── Consumers: 10 replicas that pop from Redis and process ───
   processor:
     build:

@@ -1,7 +1,15 @@
-"""Custom Selenium Grid middleware for Scrapy."""
+"""Custom Scrapy middlewares.
+
+- SeleniumGridMiddleware: legacy JS-render fallback (currently unused).
+- RedisCookieMiddleware: pulls fresh session cookies from Redis on a short
+  TTL and attaches them to every request. Pairs with the cookie-refresher
+  sidecar so long-running processors don't drift onto expired sessions.
+"""
+import json
 import os
 import time
 import random
+import redis
 from scrapy.http import HtmlResponse
 from scrapy import signals
 from selenium import webdriver
@@ -161,3 +169,74 @@ class SeleniumGridMiddleware:
             encoding="utf-8",
             request=request,
         )
+
+
+# ─── Redis-backed cookie injection ────────────────────────────────
+
+class RedisCookieMiddleware:
+    """Attach fresh session cookies from Redis to every outgoing request.
+
+    Reads `hafele:session:cookies` (JSON), caches the result in-process for
+    `COOKIE_CACHE_TTL` seconds (default 60), and sets `request.cookies` so
+    Scrapy's built-in CookiesMiddleware (higher priority) serialises them
+    into the Cookie header.
+
+    Pair with the `cookie-refresher` sidecar, which re-logs in every 10 min
+    and updates the same Redis key. Processors then automatically pick up
+    the new cookies within one TTL window without needing to restart.
+    """
+
+    def __init__(self, crawler, redis_url: str, cache_ttl: int, cookies_key: str):
+        # Stash crawler so we can get the current spider without receiving it
+        # as a process_request argument (removed in Scrapy 2.14+).
+        self.crawler = crawler
+        self.redis_url = redis_url
+        self.cache_ttl = cache_ttl
+        self.cookies_key = cookies_key
+        self._cookies: dict = {}
+        self._last_refresh = 0.0
+        self._redis = None
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        settings = crawler.settings
+        return cls(
+            crawler=crawler,
+            redis_url=os.getenv("REDIS_URL", settings.get("REDIS_URL", "redis://hafele-redis:6379")),
+            cache_ttl=int(settings.getint("COOKIE_CACHE_TTL", 60)),
+            cookies_key=settings.get("COOKIE_REDIS_KEY", "hafele:session:cookies"),
+        )
+
+    def _get_redis(self):
+        if self._redis is None:
+            self._redis = redis.from_url(self.redis_url, decode_responses=True)
+        return self._redis
+
+    def _maybe_refresh(self):
+        now = time.time()
+        if now - self._last_refresh < self.cache_ttl:
+            return
+        spider = self.crawler.spider
+        try:
+            raw = self._get_redis().get(self.cookies_key)
+            if not raw:
+                self._last_refresh = now
+                return
+            self._cookies = json.loads(raw) or {}
+            self._last_refresh = now
+            if spider is not None:
+                spider.logger.debug(f"[cookies] refreshed cache: {len(self._cookies)} cookies")
+        except Exception as e:
+            if spider is not None:
+                spider.logger.warning(f"[cookies] refresh failed: {e}")
+
+    def process_request(self, request):
+        self._maybe_refresh()
+        if not self._cookies:
+            return None
+        # Merge — request-level cookies (rarely used here) take priority.
+        current = dict(request.cookies) if isinstance(request.cookies, dict) else {}
+        merged = dict(self._cookies)
+        merged.update(current)
+        request.cookies = merged
+        return None

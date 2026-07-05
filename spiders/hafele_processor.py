@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import redis
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
-from scrapy import Request, signals
+from scrapy import Request
 from scrapy_redis.spiders import RedisSpider
 
 from spiders.headers import API_HEADERS, BROWSER_HEADERS
@@ -181,6 +181,9 @@ class HafeleProcessor(RedisSpider):
 
     # Auth backend is slow — 10 procs × high concurrency triggered Cloudflare 524s.
     # Keep 10 replicas (for master crawl parallelism) but throttle per-processor.
+    # RedisCookieMiddleware auto-injects fresh session cookies (60s cache) —
+    # no per-request cookies= needed here, and no restart needed when the
+    # cookie-refresher sidecar updates them.
     custom_settings = {
         "CONCURRENT_REQUESTS": 3,
         "CONCURRENT_REQUESTS_PER_DOMAIN": 3,
@@ -194,36 +197,13 @@ class HafeleProcessor(RedisSpider):
         "LOG_LEVEL": "INFO",
         "SCHEDULER_IDLE_BEFORE_CLOSE": 30,
         "CLOSESPIDER_TIMEOUT": 3600,
+        "COOKIE_CACHE_TTL": 60,
+        "COOKIE_REDIS_KEY": REDIS_COOKIES_KEY,
         "DOWNLOADER_MIDDLEWARES": {
             "scrapy.downloadermiddlewares.retry.RetryMiddleware": 90,
+            "spiders.middlewares.RedisCookieMiddleware": 100,
         },
     }
-
-    session_cookies: dict = {}
-
-    @classmethod
-    def from_crawler(cls, crawler, *args, **kwargs):
-        spider = super().from_crawler(crawler, *args, **kwargs)
-        crawler.signals.connect(spider._load_cookies, signal=signals.spider_opened)
-        return spider
-
-    def _load_cookies(self):
-        rc = get_redis()
-        raw = rc.get(REDIS_COOKIES_KEY)
-        if not raw:
-            self.logger.warning(
-                "No session cookies in Redis (%s). API responses will be anonymous "
-                "and stok_durumu will fall back to 'Stok bilgisi bulunamadi'.",
-                REDIS_COOKIES_KEY,
-            )
-            self.session_cookies = {}
-            return
-        try:
-            self.session_cookies = json.loads(raw) or {}
-        except json.JSONDecodeError:
-            self.logger.error("Session cookies in Redis are not valid JSON; ignoring.")
-            self.session_cookies = {}
-        self.logger.info(f"Loaded {len(self.session_cookies)} session cookies from Redis")
 
     def make_request_from_data(self, data):
         url = data.decode("utf-8") if isinstance(data, bytes) else data
@@ -236,7 +216,6 @@ class HafeleProcessor(RedisSpider):
                 meta={"master_url": url},
                 dont_filter=True,
                 headers=BROWSER_HEADERS,
-                cookies=self.session_cookies,
             )
         if is_article_table_url(url):
             return Request(
@@ -245,7 +224,6 @@ class HafeleProcessor(RedisSpider):
                 meta={"article_table_url": url},
                 dont_filter=True,
                 headers=API_HEADERS,
-                cookies=self.session_cookies,
             )
         if is_api_url(url):
             return Request(
@@ -254,7 +232,6 @@ class HafeleProcessor(RedisSpider):
                 meta={"api_url": url},
                 dont_filter=True,
                 headers=API_HEADERS,
-                cookies=self.session_cookies,
             )
 
         self.logger.warning(f"Unknown URL, defaulting to API parse: {url[:80]}")
@@ -264,7 +241,6 @@ class HafeleProcessor(RedisSpider):
             meta={"api_url": url},
             dont_filter=True,
             headers=API_HEADERS,
-            cookies=self.session_cookies,
         )
 
     def parse_master(self, response):
@@ -303,7 +279,6 @@ class HafeleProcessor(RedisSpider):
                     meta={"article_table_url": table_url, "master_sku": master_sku},
                     dont_filter=True,
                     headers=API_HEADERS,
-                    cookies=self.session_cookies,
                 )
 
     def parse_article_table(self, response):

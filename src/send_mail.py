@@ -29,10 +29,14 @@ def send_mail(recipient_email, subject, body):
         print(f"✅ Email sent to {recipient_email} | Subject: {subject}")
 
 
-def send_mail_with_excel(recipient_email, excel_file):
-    """Send the generated Excel report as an attachment."""
-    subject = "Hafele Guncel Stoklar"
-    content = r"Guncel stoklari iceren .xlsx dosyasini ekte bulabilirsiniz."
+def send_mail_with_excel(recipient_email, excel_file, subject=None, body=None):
+    """Send the generated Excel report as an attachment.
+
+    Subject and body default to the legacy Turkish strings but can be
+    overridden by callers (e.g. reporter.py wants to include run stats).
+    """
+    subject = subject or "Hafele Guncel Stoklar"
+    content = body or "Guncel stoklari iceren .xlsx dosyasini ekte bulabilirsiniz."
 
     sender_email = os.getenv("gmail_sender_email")
     app_password = os.getenv("gmail_app_password")

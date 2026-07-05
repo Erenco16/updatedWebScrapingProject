@@ -21,7 +21,7 @@ Distributed pipeline for extracting price + stock data from [hafele.com.tr](http
 
 ## Architecture — what runs where
 
-Running `docker compose up --build` starts **21 containers** in dependency order:
+Running `docker compose up --build` starts **22 containers** in dependency order:
 
 | # of containers | Service | Container name(s) | Purpose |
 |---|---|---|---|
@@ -33,6 +33,7 @@ Running `docker compose up --build` starts **21 containers** in dependency order
 | 1 | `reporter` | `hafele-reporter` | One-shot post-processor — generates Excel + sends email. |
 | 1 | `log-collector` | `hafele-log-collector` | Sidecar that mounts docker.sock and tails every container above into a dedicated file under `./logs/`. |
 | 1 | `queue-watchdog` | `hafele-queue-watchdog` | Sidecar that restarts exited processors while Redis still has work, and kicks the reporter after full drain. |
+| 1 | `cookie-refresher` | `hafele-cookie-refresher` | Sidecar that re-logs in every 10 min and updates the session cookies in Redis, so long runs don't drift onto expired sessions. |
 
 Compose enforces dependency order via `depends_on` + `condition`:
 
@@ -107,6 +108,15 @@ Processors can exit before the queue drains (Scrapy's idle timer misfiring, `CLO
 - If the **queue is empty** and **all processors are exited** and **the reporter is still in `Created`** state, it `docker start`s the reporter — this fixes the `docker compose up -d` quirk where the reporter never gets promoted from `Created` once the initial `up` command has returned.
 
 The watchdog is a plain `docker:cli` container mounting `/var/run/docker.sock`. It has no dependency on the harvester or processors, so it's up from the very first second of the run and simply waits until `hafele:harvester:status == "done"` before acting.
+
+**Cookie refresher — keep the session alive**
+Hafele's session cookies expire after ~5–6 hours (a mix of app session TTL and Cloudflare `cf_clearance` rotation). When they die mid-run, the API silently switches to anonymous responses (no `values-tr` rows, only a single price span) and every subsequent row is saved with `stok_durumu = "Stok bilgisi bulunamadi"` and only one of the three price fields populated. The `cookie-refresher` sidecar prevents this:
+
+- Every `COOKIE_REFRESH_INTERVAL` seconds (default 600 = 10 min), it drives a fresh Selenium login via `src/hafele_login.py` (the same flow the harvester uses on startup) and writes the new cookies to `hafele:session:cookies`.
+- Processors don't have to restart. Their `RedisCookieMiddleware` (priority 100) re-reads the Redis key with an in-process cache TTL of 60 s and merges the fresh cookies into every outgoing `Request`. So new cookies propagate to every processor within ≤60 s of a refresh.
+- The sidecar `restart: unless-stopped` — if a single login fails (network flap, Grid slot contention), it retries on the next tick.
+
+This means a run can go for many hours without touching the DB. Cookies are always ≤11 minutes stale, and any given request uses cookies that are ≤71 s stale (10 min refresh + 60 s middleware cache).
 
 ---
 
@@ -288,6 +298,164 @@ tail -f logs/hafele-harvester.log                                # live
 grep -E "stokta mevcut|istek üzerine" logs/updatedwebscrapingproject-processor-*.log
 wc -l logs/*.log                                                  # size overview
 ```
+
+---
+
+## How the login / stock-parsing fix was tested
+
+After we discovered a cohort of ~2,300 rows had been saved with `stok_durumu = "Stok bilgisi bulunamadi"` (session cookies had expired ~5 hours into the run and the pipeline kept silently harvesting anon responses), the fix — `cookie-refresher` sidecar + `RedisCookieMiddleware` — was validated in three layers before the full clean re-run.
+
+### 1. Parser unit test against a live authenticated response
+
+Loads cookies from Redis, fetches one SKU directly with `requests`, and runs the exact parsing functions the processor uses:
+
+```bash
+cd /home/erenco/openclaw-workspace/updatedWebScrapingProject
+venv/bin/python - <<'PY'
+import json, sys, requests
+sys.path.insert(0, ".")
+import redis
+from bs4 import BeautifulSoup
+from spiders.headers import API_HEADERS
+from spiders.hafele_processor import (
+    parse_stock_from_values_tr, parse_stock_fallback,
+    parse_price_from_html, DEFAULT_STATUS_UNKNOWN,
+)
+
+SKU = "10986202"
+rc = redis.from_url("redis://localhost:6379", decode_responses=True)
+cookies = json.loads(rc.get("hafele:session:cookies"))
+url = (
+    "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/"
+    f"ViewProduct-GetPriceAndAvailabilityInformationPDS?SKU={SKU}"
+    "&ProductQuantity=20000&SynchronizationAjaxToken=1"
+)
+r = requests.get(url, headers=API_HEADERS, cookies=cookies, timeout=30)
+soup = BeautifulSoup(r.text, "html.parser")
+
+stok_durumu, stock_amount = parse_stock_from_values_tr(soup)
+if not stok_durumu:
+    stok_durumu = parse_stock_fallback(soup) or DEFAULT_STATUS_UNKNOWN
+prices = parse_price_from_html(soup)
+
+assert stok_durumu == "stokta mevcut"
+assert stock_amount == 86
+print("PASS:", stok_durumu, stock_amount, prices)
+PY
+```
+
+Verifies:
+- Response body is ~7 KB (authenticated shape) instead of ~2.7 KB (anon shape).
+- `parse_stock_from_values_tr` yields `("stokta mevcut", 86)`.
+- All three price fields are set (`117,47 TL`, `234,94 TL`, `156,63 TL`).
+
+### 2. End-to-end pipeline test on a single SKU
+
+Confirms the whole processor stack — Redis pop → middleware cookie injection → HTTP fetch → parse → SQLite UPSERT — works together:
+
+```bash
+# Delete any prior row and queue only this URL
+sqlite3 data/products.db "DELETE FROM products WHERE sku='10986202';"
+docker exec hafele-redis redis-cli LPUSH hafele:api_urls \
+  "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS?SKU=10986202&ProductQuantity=20000&SynchronizationAjaxToken=1"
+
+# Run one processor with a 60s cap
+docker compose run --rm --no-deps -T processor \
+  python -m scrapy crawl hafele_processor \
+  -s REDIS_URL=redis://hafele-redis:6379 \
+  -s CLOSESPIDER_TIMEOUT=60 -s SCHEDULER_IDLE_BEFORE_CLOSE=15
+
+# Read back the row
+sqlite3 data/products.db "SELECT sku, stok_durumu, stock_amount,
+       kdv_haric_net_fiyat, kdv_haric_satis_fiyati,
+       kdv_haric_tavsiye_edilen_perakende_fiyat
+FROM products WHERE sku='10986202';"
+```
+
+Expected row: `10986202 | stokta mevcut | 86 | 117,47 TL | 234,94 TL | 156,63 TL`.
+
+The processor's own log confirms `spiders.middlewares.RedisCookieMiddleware` is in the enabled downloader-middleware list — that's the cookie-injection path in action.
+
+### 3. Regression against 5 SKUs from the "cookies-expired" cohort
+
+The 00:XX window in the last full run produced 2,322 rows with `Stok bilgisi bulunamadi`. Pick 5 of them, delete their rows, re-queue their API URLs, and run one processor:
+
+```bash
+BROKEN=$(sqlite3 data/products.db "SELECT sku FROM products
+  WHERE stok_durumu='Stok bilgisi bulunamadi'
+    AND (kdv_haric_satis_fiyati IS NULL OR kdv_haric_satis_fiyati='')
+  LIMIT 5;")
+
+for sku in $BROKEN; do
+  sqlite3 data/products.db "DELETE FROM products WHERE sku='$sku';"
+  docker exec hafele-redis redis-cli LPUSH hafele:api_urls \
+    "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/tr_TR/-/TRY/ViewProduct-GetPriceAndAvailabilityInformationPDS?SKU=$sku&ProductQuantity=20000&SynchronizationAjaxToken=1"
+done
+
+docker compose run --rm --no-deps -T processor \
+  python -m scrapy crawl hafele_processor \
+  -s REDIS_URL=redis://hafele-redis:6379 \
+  -s CLOSESPIDER_TIMEOUT=90 -s SCHEDULER_IDLE_BEFORE_CLOSE=20
+
+sqlite3 -header -column data/products.db "SELECT sku, stok_durumu, stock_amount,
+  kdv_haric_net_fiyat AS net, kdv_haric_satis_fiyati AS sales,
+  kdv_haric_tavsiye_edilen_perakende_fiyat AS srp
+FROM products WHERE sku IN ($(echo $BROKEN | sed \"s/[^ ]*/'&'/g; s/ /,/g\"));"
+```
+
+All 5 rows should come back with real stock statuses, real quantities, and all three price columns populated. During the fix run: 4 × `stokta mevcut`, 1 × `1 ila 3 gün içinde`, quantities 5 / 10 / 17 / 624 / 2843.
+
+### 4. Full clean rebuild end-to-end
+
+The final confidence check — down everything (`docker compose down -v`), rebuild, `docker compose up -d`, and verify:
+
+```bash
+docker compose down -v
+rm -f data/products.db data/*.db-shm data/*.db-wal data/*_Hafele_Guncel_Stoklar.xlsx
+docker compose up --build -d
+
+# Watch for the two "endpoint" signals
+docker logs -f hafele-harvester | grep -m1 "Hafele Web Scraping Started"
+docker logs -f hafele-reporter  | grep -m1 "Completion email + Excel sent"
+
+# Excel should exist, DB row count should match harvester total_masters × variants
+ls -la data/*_Hafele_Guncel_Stoklar.xlsx
+sqlite3 data/products.db "SELECT COUNT(*) FROM products;"
+sqlite3 data/products.db "SELECT stok_durumu, COUNT(*) FROM products GROUP BY 1 ORDER BY 2 DESC;"
+```
+
+You should see:
+- A start email arrive in `informal_mail` within the first minute (subject `🚀 Hafele Web Scraping Started`).
+- Zero "Stok bilgisi bulunamadi" rows if the run stays under ~10 min per cookie window, otherwise a small residual only from products Hafele genuinely returned no availability rows for.
+- A completion email arrive at the end with the Excel attached (subject `✅ Hafele Web Scraping Completed — N products`).
+
+### ⚠️ Do not use the reporter as a dry-run smoke test
+
+`docker compose run --rm --no-deps -T reporter python -m reporter` **will send a real email** with the current DB state to `informal_mail`. Do not use it to verify pipeline plumbing mid-run — you'll receive a premature "completed" email with an incomplete row count. If you must dry-run the reporter, override `informal_mail` for that command only:
+
+```bash
+docker compose run --rm --no-deps -T \
+  -e informal_mail= \
+  reporter python -m reporter
+# (empty informal_mail → reporter prints "skipping email step")
+```
+
+Only `informal_mail` receives completion emails. The `gmail_receiver_email` and `gmail_receiver_email_2` env vars from `.env` are intentionally **not** used until the run has been end-to-end validated. Widen the recipient list in `reporter.py::send_notification_emails` when ready to go live.
+
+### Verifying the cookie refresher
+
+Kill-the-run and re-run the refresher with a short interval to prove it works on its own:
+
+```bash
+docker compose run --rm --no-deps -e COOKIE_REFRESH_INTERVAL=5 cookie-refresher \
+  timeout 60 python -m refresh_cookies
+
+# Watch the Redis timestamp change
+docker exec hafele-redis redis-cli GET hafele:session:cookies:refreshed_at
+docker exec hafele-redis redis-cli STRLEN hafele:session:cookies
+```
+
+Successful output: `refreshed 24 cookies (logged_in_shape=True)` at least once, `STRLEN` around 2,900 bytes, and `refreshed_at` a recent Unix timestamp.
 
 ---
 

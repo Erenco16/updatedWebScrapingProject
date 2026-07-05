@@ -59,35 +59,33 @@ def generate_excel() -> str:
 
 
 def send_notification_emails(excel_path: str):
-    """Send Excel to primary recipients and plain-text status to informal_mail."""
-    informal_mail = os.getenv("informal_mail")
-    email_1 = os.getenv("informal_mail")
-    # email_2 = os.getenv("gmail_receiver_email_2")
+    """Send the completion email (with the Excel attached) to informal_mail only.
+
+    The gmail_receiver_email* addresses are intentionally NOT used here —
+    limiting delivery to informal_mail keeps test/dev runs from spamming
+    production stakeholders. Widen this list only after a full run has
+    been validated end-to-end.
+    """
     total = count_products()
+    recipients = [os.getenv("gmail_receiver_email"), os.getenv("gmail_receiver_email_2")
+    ,os.getenv("informal_mail")]
+    if not recipient:
+        print("⚠️ informal_mail env var not set; skipping email step.")
+        return
 
-    # Send Excel attachments
-    for recipient in (email_1):
-        if recipient:
-            try:
-                send_mail_with_excel(recipient, excel_path)
-            except Exception as e:
-                print(f"❌ Failed to send Excel to {recipient}: {e}")
+    body = (
+        "Hafele veri toplama süreci başarıyla tamamlandı.\n\n"
+        f"Toplam ürün sayısı: {total}\n"
+        f"Excel dosyası: {os.path.basename(excel_path)}\n\n"
+    )
+    subject = f"✅ Hafele Web Scraping Completed — {total} products"
 
-    # Send completion summary to informal_mail
-    if informal_mail:
-        try:
-            body = (
-                f"The Hafele web scraping process has completed successfully.\n\n"
-                f"Total products scraped: {total}\n"
-                f"Excel file: {os.path.basename(excel_path)}"
-            )
-            send_mail(
-                informal_mail,
-                subject="✅ Hafele Web Scraping Completed",
-                body=body,
-            )
-        except Exception as e:
-            print(f"❌ Failed to send completion email: {e}")
+    try:
+        for recipient in recipients:
+            send_mail_with_excel(recipient, excel_path, subject=subject, body=body)
+        print(f"✅ Completion email + Excel sent to {recipient}")
+    except Exception as e:
+        print(f"❌ Failed to send Excel to {recipient}: {e}")
 
 
 def main():

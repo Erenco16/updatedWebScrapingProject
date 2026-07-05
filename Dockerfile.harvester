@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY src/ /app/src/
 COPY spiders/ /app/spiders/
 COPY database.py /app/database.py
+COPY refresh_cookies.py /app/refresh_cookies.py
 
 ENV PYTHONUNBUFFERED=1
 ENV GRID_URL=http://selenium-hub:4444/wd/hub
