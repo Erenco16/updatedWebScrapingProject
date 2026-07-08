@@ -15,6 +15,7 @@ from datetime import date
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pandas as pd
+import redis
 from dotenv import load_dotenv
 
 from database import get_all_products, count_products
@@ -23,6 +24,30 @@ from src.send_mail import send_mail, send_mail_with_excel
 load_dotenv()
 
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "/app/data")
+REDIS_URL = os.getenv("REDIS_URL", "redis://hafele-redis:6379")
+REDIS_QUEUE_KEY = "hafele:api_urls"
+ALLOW_UNCONFIRMED = os.getenv("ALLOW_UNCONFIRMED_REPORT", "").lower() in ("1", "true", "yes")
+
+
+def drain_is_confirmed():
+    """Return (ok, reason). Reporter refuses to do anything unless ok is True.
+
+    Guards against the compose `service_completed_successfully` trigger firing
+    on the first brief idle-exit of the processors, which produces a partial
+    excel snapshot. Also stops the reporter from running when the harvester
+    hasn't set its status flag yet. Override with ALLOW_UNCONFIRMED_REPORT=1.
+    """
+    try:
+        rc = redis.from_url(REDIS_URL, decode_responses=True)
+        status = (rc.get("hafele:harvester:status") or "").strip()
+        qlen = int(rc.llen(REDIS_QUEUE_KEY) or 0)
+    except Exception as e:
+        return False, f"Redis unreachable: {e}"
+    if status != "done":
+        return False, f"harvester status is {status!r}, expected 'done'"
+    if qlen != 0:
+        return False, f"queue still has {qlen} URLs pending"
+    return True, "harvester=done, queue=0"
 
 
 def generate_excel() -> str:
@@ -67,8 +92,7 @@ def send_notification_emails(excel_path: str):
     been validated end-to-end.
     """
     total = count_products()
-    recipients = [os.getenv("gmail_receiver_email"), os.getenv("gmail_receiver_email_2")
-    ,os.getenv("informal_mail")]
+    recipient = (os.getenv("informal_mail") or "").strip()
     if not recipient:
         print("⚠️ informal_mail env var not set; skipping email step.")
         return
@@ -81,8 +105,7 @@ def send_notification_emails(excel_path: str):
     subject = f"✅ Hafele Web Scraping Completed — {total} products"
 
     try:
-        for recipient in recipients:
-            send_mail_with_excel(recipient, excel_path, subject=subject, body=body)
+        send_mail_with_excel(recipient, excel_path, subject=subject, body=body)
         print(f"✅ Completion email + Excel sent to {recipient}")
     except Exception as e:
         print(f"❌ Failed to send Excel to {recipient}: {e}")
@@ -92,6 +115,21 @@ def main():
     print("=" * 60)
     print("📊 HAFELE REPORTER")
     print("=" * 60)
+
+    ok, reason = drain_is_confirmed()
+    if not ok:
+        if ALLOW_UNCONFIRMED:
+            print(f"⚠️ Drain NOT confirmed ({reason}); ALLOW_UNCONFIRMED_REPORT is set, continuing.")
+        else:
+            print(
+                f"⛔ Drain NOT confirmed: {reason}. "
+                "Refusing to generate a partial Excel / send a premature 'completed' email. "
+                "The queue-watchdog will restart me once the queue is truly empty. "
+                "Set ALLOW_UNCONFIRMED_REPORT=1 to override manually."
+            )
+            sys.exit(1)
+    else:
+        print(f"✅ Drain confirmed ({reason}); generating Excel + sending email.")
 
     total = count_products()
     print(f"📦 Products in database: {total}")
