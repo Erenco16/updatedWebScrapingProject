@@ -247,15 +247,18 @@ services:
       - ./data:/app/data
     command: ["python", "-m", "scrapy", "crawl", "hafele_processor", "-s", "REDIS_URL=redis://hafele-redis:6379", "-s", "LOG_LEVEL=INFO"]
 
-  # ─── Reporter: generates Excel & sends email after all work is done ───
+  # ─── Reporter: generates Excel & sends the completion email.
+  #     No depends_on: the queue-watchdog is the sole trigger. It runs
+  #     `docker start hafele-reporter` only after the queue has been empty
+  #     and every processor exited for REPORTER_DRAIN_CONFIRM consecutive
+  #     ticks. Without depends_on the container comes up in `created` state
+  #     when `docker compose up` runs and stays there until the watchdog
+  #     starts it — which is exactly what we want. ─────────────────────
   reporter:
     build:
       context: .
       dockerfile: Dockerfile.reporter
     container_name: hafele-reporter
-    depends_on:
-      processor:
-        condition: service_completed_successfully
     env_file:
       - .env
     environment:

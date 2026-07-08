@@ -50,17 +50,15 @@ def drain_is_confirmed():
     return True, "harvester=done, queue=0"
 
 
-def generate_excel() -> str:
-    """Read all products from SQLite and write an .xlsx file."""
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+def _write_products_excel(filepath: str) -> int:
+    """Dump every product row from SQLite into `filepath`. Returns rows written.
+
+    Always reads fresh from the DB so a retry after a mismatch picks up
+    any writes that happened in between.
+    """
     rows = get_all_products()
-    total = count_products()
-
-    if not rows:
-        print("⚠️ No products found in database.")
-        return None
-
     df = pd.DataFrame(rows)
+
     # Drop internal id / scraped_at from final report for cleanliness
     drop_cols = ["id", "scraped_at", "is_group_product"]
     for col in drop_cols:
@@ -74,12 +72,63 @@ def generate_excel() -> str:
         cols = ["stock_code"] + cols
         df = df[cols]
 
+    df.to_excel(filepath, index=False)
+    return len(df)
+
+
+def _count_excel_rows(filepath: str) -> int:
+    """Read the Excel back and return its data-row count (-1 on read error)."""
+    try:
+        return pd.read_excel(filepath).shape[0]
+    except Exception as e:
+        print(f"⚠️ Could not read back Excel for verification: {e}")
+        return -1
+
+
+def generate_excel() -> str:
+    """Read all products from SQLite, write .xlsx, verify count matches DB.
+
+    Regenerates the Excel from the DB if the file's row count doesn't
+    match `count_products()` — that way any partially-written or stale
+    file gets rewritten with the full dataset. Retries once before giving
+    up (returns the path either way; the caller decides what to do).
+    """
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    db_total = count_products()
+
+    if db_total == 0:
+        print("⚠️ No products found in database.")
+        return None
+
     today = str(date.today()).replace("-", "_")
     filename = f"{today}_Hafele_Guncel_Stoklar.xlsx"
     filepath = os.path.join(OUTPUT_DIR, filename)
 
-    df.to_excel(filepath, index=False)
-    print(f"✅ Excel generated: {filepath} ({total} rows)")
+    written = _write_products_excel(filepath)
+    print(f"✅ Excel generated: {filepath} ({written} rows written; DB has {db_total})")
+
+    excel_rows = _count_excel_rows(filepath)
+    if excel_rows == db_total:
+        print(f"✅ Excel row count matches DB: {excel_rows} rows.")
+        return filepath
+
+    # Mismatch: regenerate once from the DB to be sure the file holds the
+    # entire dataset.
+    print(
+        f"⚠️ Excel row count ({excel_rows}) does not match DB ({db_total}). "
+        "Regenerating from the database."
+    )
+    db_total = count_products()
+    written = _write_products_excel(filepath)
+    excel_rows = _count_excel_rows(filepath)
+    if excel_rows == db_total:
+        print(f"✅ Excel regenerated and now matches DB: {excel_rows} rows.")
+    else:
+        print(
+            f"⛔ Excel still mismatches DB after regeneration: "
+            f"excel={excel_rows} db={db_total}. Sending anyway; investigate the DB/write path."
+        )
+
     return filepath
 
 
