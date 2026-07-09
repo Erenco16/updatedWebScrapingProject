@@ -132,7 +132,7 @@ def generate_excel() -> str:
     return filepath
 
 
-def send_notification_emails(excel_path: str):
+def send_notification_emails(excel_path: str, recipient: str):
     """Send the completion email (with the Excel attached) to informal_mail only.
 
     The gmail_receiver_email* addresses are intentionally NOT used here —
@@ -141,7 +141,6 @@ def send_notification_emails(excel_path: str):
     been validated end-to-end.
     """
     total = count_products()
-    recipient = (os.getenv("informal_mail") or "").strip()
     if not recipient:
         print("⚠️ informal_mail env var not set; skipping email step.")
         return
@@ -164,6 +163,11 @@ def main():
     print("=" * 60)
     print("📊 HAFELE REPORTER")
     print("=" * 60)
+    recipients = [
+        os.getenv("informal_mail"),
+        os.getenv("gmail_receiver_email"),
+        os.getenv("gmail_receiver_email_2")
+    ]
 
     ok, reason = drain_is_confirmed()
     if not ok:
@@ -196,7 +200,8 @@ def main():
 
     excel_path = generate_excel()
     if excel_path:
-        send_notification_emails(excel_path)
+        for recipient in recipients:
+            send_notification_emails(excel_path, recipient)
         print("\n✅ Reporter finished.")
 
 
