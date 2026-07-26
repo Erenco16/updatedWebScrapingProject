@@ -154,6 +154,7 @@ services:
   selenium-hub:
     image: seleniarm/hub:latest
     container_name: selenium-hub
+    stop_grace_period: 5s
     ports:
       - "4444:4444"
     healthcheck:
@@ -166,6 +167,8 @@ services:
   chrome:
     image: seleniarm/node-chromium:latest
     # Scale Chrome nodes to match processor parallelism
+    stop_grace_period: 5s
+    shm_size: 2gb   # Chro
     deploy:
       replicas: 5
     depends_on:
