@@ -6,6 +6,7 @@ openpyxl
 python-dotenv
 requests
 selenium
+seleniumbase
 redis
 lxml
 scrapy-selenium

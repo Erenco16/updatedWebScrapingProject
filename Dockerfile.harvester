@@ -4,10 +4,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install Chromium + chromedriver for Selenium
+# Install Chromium + chromedriver for Selenium, plus Xvfb so SeleniumBase's
+# UC mode can drive a real (non-headless) browser inside the container --
+# headless mode is meaningfully less reliable against Cloudflare Turnstile.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     chromium-driver \
+    xvfb \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
