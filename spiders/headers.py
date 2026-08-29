@@ -6,13 +6,25 @@ These headers match a real Chrome browser request to bypass Cloudflare anti-bot.
 
 # ─── Browser Identity ────────────────────────────────────────────
 
+# These must match the *actual* browser installed in Dockerfile.harvester
+# (plain Chromium via apt, unpinned -- currently 151) that mints
+# cf_clearance, not an arbitrary version number. A UA/Client-Hints identity
+# that doesn't match the browser which actually solved the Cloudflare
+# challenge gets the replayed cf_clearance cookie rejected with a 403,
+# even though the cookie itself is valid and fresh -- confirmed by testing:
+# this exact mismatch (stale "Google Chrome 143" here vs the real
+# unbranded Chromium 151 that logs in) is what broke the sitemap/price-API
+# fetches. Re-check with `chromium --version` if this drifts again.
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
 )
 
+# No "Google Chrome" brand: Dockerfile.harvester installs plain Chromium
+# (apt package `chromium`), not Google's branded build, and Chromium's own
+# navigator.userAgentData.brands never includes a "Google Chrome" entry.
 SEC_CH_UA = (
-    '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"'
+    '"Chromium";v="151", "Not=A?Brand";v="99"'
 )
 
 SEC_CH_UA_MOBILE = "?0"
