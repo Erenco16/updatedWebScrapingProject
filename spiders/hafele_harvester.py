@@ -2,13 +2,15 @@
 spiders/hafele_harvester.py  ── PRODUCER (sitemap + Selenium login)
 
 Flow:
-1. Log in to Hafele TR via Selenium Grid, capture session cookies
-2. Push cookies to Redis (`hafele:session:cookies`) for processors to consume
+1. Log in to Hafele TR via a local SeleniumBase driver, capture session cookies
+2. Push cookies to Redis (`hafele:session:cookies`) for downstream spiders
 3. Fetch sitemap index, extract every unique P-XXXXXX product-master ID
-4. Queue master URLs (ViewProduct-Start?SKU=P-XXXXXX) into Redis
+4. Queue master URLs (ViewProduct-Start?SKU=P-XXXXXX) into Redis for the
+   separate discovery spider (spiders/hafele_discovery.py) to pick up
 """
 import glob
 import gzip
+import json
 import os
 import re
 import sys
@@ -22,6 +24,7 @@ from dotenv import load_dotenv
 
 from database import reset_database
 from spiders.headers import BROWSER_HEADERS, USER_AGENT
+from spiders.hafele_parsing import MASTER_QUEUE_KEY, SCRAPE_QUEUE_KEY
 from src.hafele_login import login_and_get_cookies, save_cookies_to_redis
 from src.send_mail import send_mail
 
@@ -30,7 +33,8 @@ DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 load_dotenv()
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://hafele-redis:6379")
-REDIS_QUEUE_KEY = "hafele:api_urls"
+REDIS_QUEUE_KEY = MASTER_QUEUE_KEY
+DB_WRITE_QUEUE_KEY = "hafele:db_write_queue"
 
 GRID_URL = os.getenv("GRID_URL", "http://selenium-hub:4444/wd/hub")
 HAFELE_USERNAME = os.getenv("hafele_username")
@@ -155,7 +159,7 @@ def push_master_urls(redis_client, skus: set) -> int:
     pipe = redis_client.pipeline()
     for sku in sorted(skus):
         url = MASTER_URL_TEMPLATE.format(sku=sku)
-        pipe.lpush(REDIS_QUEUE_KEY, url)
+        pipe.lpush(REDIS_QUEUE_KEY, json.dumps({"url": url, "attempt": 0}))
     pipe.execute()
     return len(skus)
 
@@ -168,8 +172,8 @@ def main():
     redis_client = get_redis()
     print(f"Redis connected: {REDIS_URL}")
 
-    redis_client.delete(REDIS_QUEUE_KEY)
-    print(f"Cleared old queue: {REDIS_QUEUE_KEY}")
+    redis_client.delete(REDIS_QUEUE_KEY, SCRAPE_QUEUE_KEY, DB_WRITE_QUEUE_KEY)
+    print(f"Cleared old queues: {REDIS_QUEUE_KEY}, {SCRAPE_QUEUE_KEY}, {DB_WRITE_QUEUE_KEY}")
 
     reset_database()
     cleanup_stale_excel_files()

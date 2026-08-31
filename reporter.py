@@ -25,7 +25,9 @@ load_dotenv()
 
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "/app/data")
 REDIS_URL = os.getenv("REDIS_URL", "redis://hafele-redis:6379")
-REDIS_QUEUE_KEY = "hafele:api_urls"
+MASTER_QUEUE_KEY = "hafele:master_urls"
+SCRAPE_QUEUE_KEY = "hafele:scrape_queue"
+DB_WRITE_QUEUE_KEY = "hafele:db_write_queue"
 ALLOW_UNCONFIRMED = os.getenv("ALLOW_UNCONFIRMED_REPORT", "").lower() in ("1", "true", "yes")
 
 
@@ -33,21 +35,27 @@ def drain_is_confirmed():
     """Return (ok, reason). Reporter refuses to do anything unless ok is True.
 
     Guards against the compose `service_completed_successfully` trigger firing
-    on the first brief idle-exit of the processors, which produces a partial
-    excel snapshot. Also stops the reporter from running when the harvester
-    hasn't set its status flag yet. Override with ALLOW_UNCONFIRMED_REPORT=1.
+    on the first brief idle-exit of the discovery/scraper pools, which
+    produces a partial excel snapshot. Also stops the reporter from running
+    when the harvester hasn't set its status flag yet, or when db-writer
+    still has a backlog of scraped items it hasn't persisted yet. Override
+    with ALLOW_UNCONFIRMED_REPORT=1.
     """
     try:
         rc = redis.from_url(REDIS_URL, decode_responses=True)
         status = (rc.get("hafele:harvester:status") or "").strip()
-        qlen = int(rc.llen(REDIS_QUEUE_KEY) or 0)
+        master_qlen = int(rc.llen(MASTER_QUEUE_KEY) or 0)
+        scrape_qlen = int(rc.llen(SCRAPE_QUEUE_KEY) or 0)
+        db_write_qlen = int(rc.llen(DB_WRITE_QUEUE_KEY) or 0)
     except Exception as e:
         return False, f"Redis unreachable: {e}"
     if status != "done":
         return False, f"harvester status is {status!r}, expected 'done'"
-    if qlen != 0:
-        return False, f"queue still has {qlen} URLs pending"
-    return True, "harvester=done, queue=0"
+    if master_qlen != 0 or scrape_qlen != 0:
+        return False, f"queues still have work (master={master_qlen}, scrape={scrape_qlen})"
+    if db_write_qlen != 0:
+        return False, f"db-writer still has {db_write_qlen} items pending"
+    return True, "harvester=done, master=0, scrape=0, db_write=0"
 
 
 def _write_products_excel(filepath: str) -> int:

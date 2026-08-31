@@ -43,12 +43,15 @@ services:
           sleep 3
         done
 
-  # ─── Queue watchdog: if processors exit while `hafele:api_urls` still has
-  #     work, restart the exited processor containers so they resume draining.
-  #     When the queue is empty and every processor has exited cleanly, it
-  #     also promotes the reporter from `Created` to running (a workaround
-  #     for `docker compose up -d` not honouring `service_completed_successfully`
-  #     after the initial start). ───────────────────────────────────────────
+  # ─── Queue watchdog: discovery and scraper are two independent pools now
+  #     (see discovery/scraper services below), each with its own Redis
+  #     queue. If either pool exits entirely while its queue still has
+  #     work, restart that pool's exited containers so it resumes draining
+  #     -- independently of whether the other pool is still running. When
+  #     both queues + the db-write queue are empty and both pools have
+  #     exited, it promotes the reporter from `Created` to running (a
+  #     workaround for `docker compose up -d` not honouring
+  #     `service_completed_successfully` after the initial start). ───────
   queue-watchdog:
     image: docker:cli
     container_name: hafele-queue-watchdog
@@ -59,7 +62,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - REDIS_QUEUE_KEY=hafele:api_urls
+      - MASTER_QUEUE_KEY=hafele:master_urls
+      - SCRAPE_QUEUE_KEY=hafele:scrape_queue
       - DB_WRITE_QUEUE_KEY=hafele:db_write_queue
       - POLL_INTERVAL=30
       - RESTART_COOLDOWN=60
@@ -69,15 +73,17 @@ services:
       - -c
       - |
         set -u
-        Q="$${REDIS_QUEUE_KEY:-hafele:api_urls}"
+        MQ="$${MASTER_QUEUE_KEY:-hafele:master_urls}"
+        SQ="$${SCRAPE_QUEUE_KEY:-hafele:scrape_queue}"
         DBQ="$${DB_WRITE_QUEUE_KEY:-hafele:db_write_queue}"
         INTERVAL="$${POLL_INTERVAL:-30}"
         COOLDOWN="$${RESTART_COOLDOWN:-60}"
         CONFIRM_TICKS="$${REPORTER_DRAIN_CONFIRM:-3}"
-        LAST_RESTART=0
+        LAST_RESTART_DISCOVERY=0
+        LAST_RESTART_SCRAPER=0
         DRAIN_STREAK=0
         REPORTER_STARTED=0
-        echo "watchdog: watching '$$Q' + '$$DBQ' every $${INTERVAL}s (cooldown $${COOLDOWN}s; reporter needs $${CONFIRM_TICKS} consecutive drain ticks)"
+        echo "watchdog: watching '$$MQ' (discovery) + '$$SQ' (scraper) + '$$DBQ' every $${INTERVAL}s (cooldown $${COOLDOWN}s; reporter needs $${CONFIRM_TICKS} consecutive drain ticks)"
         while true; do
           sleep "$$INTERVAL"
           NOW=$$(date +%s)
@@ -87,43 +93,71 @@ services:
             DRAIN_STREAK=0
             continue
           fi
-          QLEN=$$(docker exec hafele-redis redis-cli LLEN "$$Q" 2>/dev/null || echo 0)
+          MQLEN=$$(docker exec hafele-redis redis-cli LLEN "$$MQ" 2>/dev/null || echo 0)
+          SQLEN=$$(docker exec hafele-redis redis-cli LLEN "$$SQ" 2>/dev/null || echo 0)
           DBQLEN=$$(docker exec hafele-redis redis-cli LLEN "$$DBQ" 2>/dev/null || echo 0)
-          RUNNING=$$(docker ps --filter 'name=updatedwebscrapingproject-processor-' --format '{{.Names}}' | wc -l | tr -d ' ')
-          EXITED=$$(docker ps -a --filter 'name=updatedwebscrapingproject-processor-' --filter 'status=exited' --format '{{.Names}}')
+          DISCOVERY_RUNNING=$$(docker ps --filter 'name=updatedwebscrapingproject-discovery-' --format '{{.Names}}' | wc -l | tr -d ' ')
+          SCRAPER_RUNNING=$$(docker ps --filter 'name=updatedwebscrapingproject-scraper-' --format '{{.Names}}' | wc -l | tr -d ' ')
+          DISCOVERY_EXITED=$$(docker ps -a --filter 'name=updatedwebscrapingproject-discovery-' --filter 'status=exited' --format '{{.Names}}')
+          SCRAPER_EXITED=$$(docker ps -a --filter 'name=updatedwebscrapingproject-scraper-' --filter 'status=exited' --format '{{.Names}}')
 
           # Any sign of remaining work resets the drain streak so a
-          # temporary queue dip (or a false idle-exit before variant API
-          # URLs get re-enqueued) never fires the reporter. This also
-          # guards against starting the reporter while db-writer still has
-          # a backlog of scraped items it hasn't persisted yet.
-          if [ "$$QLEN" != "0" ] || [ "$$DBQLEN" != "0" ] || [ "$$RUNNING" != "0" ]; then
+          # temporary queue dip (or a false idle-exit before newly
+          # discovered/re-queued URLs land) never fires the reporter. This
+          # also guards against starting it while db-writer still has a
+          # backlog of scraped items it hasn't persisted yet.
+          if [ "$$MQLEN" != "0" ] || [ "$$SQLEN" != "0" ] || [ "$$DBQLEN" != "0" ] || [ "$$DISCOVERY_RUNNING" != "0" ] || [ "$$SCRAPER_RUNNING" != "0" ]; then
             DRAIN_STREAK=0
           fi
 
-          # Case 1: queue has work but no processors are running -> restart exited ones
-          if [ "$$QLEN" -gt 0 ] && [ "$$RUNNING" -eq 0 ] && [ -n "$$EXITED" ]; then
-            if [ $$(( NOW - LAST_RESTART )) -ge "$$COOLDOWN" ]; then
-              COUNT=$$(echo "$$EXITED" | grep -c . || true)
-              echo "watchdog: queue=$$QLEN running=0 exited=$$COUNT -> restarting"
-              for c in $$EXITED; do
+          RESTARTED_SOMETHING=0
+
+          # Case 1a: master queue has work but the discovery pool is fully
+          # down -> restart its exited containers.
+          if [ "$$MQLEN" -gt 0 ] && [ "$$DISCOVERY_RUNNING" -eq 0 ] && [ -n "$$DISCOVERY_EXITED" ]; then
+            if [ $$(( NOW - LAST_RESTART_DISCOVERY )) -ge "$$COOLDOWN" ]; then
+              COUNT=$$(echo "$$DISCOVERY_EXITED" | grep -c . || true)
+              echo "watchdog: master_urls=$$MQLEN discovery_running=0 exited=$$COUNT -> restarting discovery"
+              for c in $$DISCOVERY_EXITED; do
                 docker start "$$c" >/dev/null 2>&1 && echo "watchdog:   restarted $$c"
               done
-              LAST_RESTART=$$NOW
+              LAST_RESTART_DISCOVERY=$$NOW
             else
-              echo "watchdog: queue=$$QLEN but in cooldown ($$(( COOLDOWN - (NOW - LAST_RESTART) ))s left)"
+              echo "watchdog: master_urls=$$MQLEN but discovery restart in cooldown ($$(( COOLDOWN - (NOW - LAST_RESTART_DISCOVERY) ))s left)"
             fi
+            RESTARTED_SOMETHING=1
+          fi
+
+          # Case 1b: scrape queue has work but the scraper pool is fully
+          # down -> restart its exited containers. Independent of
+          # discovery's state -- one pool restarting doesn't block the
+          # other from also restarting the same tick.
+          if [ "$$SQLEN" -gt 0 ] && [ "$$SCRAPER_RUNNING" -eq 0 ] && [ -n "$$SCRAPER_EXITED" ]; then
+            if [ $$(( NOW - LAST_RESTART_SCRAPER )) -ge "$$COOLDOWN" ]; then
+              COUNT=$$(echo "$$SCRAPER_EXITED" | grep -c . || true)
+              echo "watchdog: scrape_queue=$$SQLEN scraper_running=0 exited=$$COUNT -> restarting scraper"
+              for c in $$SCRAPER_EXITED; do
+                docker start "$$c" >/dev/null 2>&1 && echo "watchdog:   restarted $$c"
+              done
+              LAST_RESTART_SCRAPER=$$NOW
+            else
+              echo "watchdog: scrape_queue=$$SQLEN but scraper restart in cooldown ($$(( COOLDOWN - (NOW - LAST_RESTART_SCRAPER) ))s left)"
+            fi
+            RESTARTED_SOMETHING=1
+          fi
+
+          if [ "$$RESTARTED_SOMETHING" -eq 1 ]; then
             continue
           fi
 
-          # Case 2: url queue + db-write queue both drained, no processors
-          # alive -> confirm drain across CONFIRM_TICKS polls then start
+          # Case 2: both queues + db-write queue drained, both pools fully
+          # exited -> confirm drain across CONFIRM_TICKS polls then start
           # the reporter. Re-run it if it exited early (previous premature
           # compose start with the defensive drain check returning exit 1
           # leaves it in 'exited').
-          if [ "$$QLEN" = "0" ] && [ "$$DBQLEN" = "0" ] && [ "$$RUNNING" -eq 0 ]; then
+          if [ "$$MQLEN" = "0" ] && [ "$$SQLEN" = "0" ] && [ "$$DBQLEN" = "0" ] && [ "$$DISCOVERY_RUNNING" -eq 0 ] && [ "$$SCRAPER_RUNNING" -eq 0 ]; then
             DRAIN_STREAK=$$(( DRAIN_STREAK + 1 ))
-            echo "watchdog: drain observation $$DRAIN_STREAK/$$CONFIRM_TICKS (queue=0, db_write_queue=0, processors=0)"
+            echo "watchdog: drain observation $$DRAIN_STREAK/$$CONFIRM_TICKS (master_urls=0, scrape_queue=0, db_write_queue=0, discovery=0, scraper=0)"
             if [ "$$DRAIN_STREAK" -lt "$$CONFIRM_TICKS" ] || [ "$$REPORTER_STARTED" -ne 0 ]; then
               continue
             fi
@@ -195,15 +229,16 @@ services:
       - COOKIE_REFRESH_INTERVAL=600
     command: ["python", "-m", "refresh_cookies"]
 
-  # ─── Consumers: 10 replicas that pop from Redis and process. No longer
-  #     mount ./data -- they push scraped items to Redis instead of
-  #     writing SQLite directly (see db-writer below). ──────────────────
-  processor:
+  # ─── Discovery: pops MASTER urls from hafele:master_urls, finds each
+  #     master's variant SKUs, pushes their price-API urls onto
+  #     hafele:scrape_queue. Runs concurrently with scraper (below), in
+  #     its own pool -- not interleaved in one combined processor. ──────
+  discovery:
     build:
       context: .
       dockerfile: Dockerfile.processor
     deploy:
-      replicas: 10
+      replicas: 3
     depends_on:
       redis:
         condition: service_healthy
@@ -214,7 +249,30 @@ services:
     environment:
       - REDIS_URL=redis://hafele-redis:6379
       - PYTHONUNBUFFERED=1
-    command: ["python", "-m", "scrapy", "crawl", "hafele_processor", "-s", "REDIS_URL=redis://hafele-redis:6379", "-s", "LOG_LEVEL=INFO"]
+    command: ["python", "-m", "scrapy", "crawl", "hafele_discovery", "-s", "REDIS_URL=redis://hafele-redis:6379", "-s", "LOG_LEVEL=INFO"]
+
+  # ─── Scraper: pops variant price/stock API urls from hafele:scrape_queue
+  #     (pushed by discovery above), fetches real price/stock data, and
+  #     pushes the result to hafele:db_write_queue for db-writer. No longer
+  #     mounts ./data -- it pushes items to Redis instead of writing
+  #     SQLite directly (see db-writer below). ─────────────────────────
+  scraper:
+    build:
+      context: .
+      dockerfile: Dockerfile.processor
+    deploy:
+      replicas: 7
+    depends_on:
+      redis:
+        condition: service_healthy
+      harvester:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://hafele-redis:6379
+      - PYTHONUNBUFFERED=1
+    command: ["python", "-m", "scrapy", "crawl", "hafele_scraper", "-s", "REDIS_URL=redis://hafele-redis:6379", "-s", "LOG_LEVEL=INFO"]
 
   # ─── Single dedicated SQLite writer. Ten processor containers writing to
   #     the same products.db file concurrently (over the virtiofs-backed

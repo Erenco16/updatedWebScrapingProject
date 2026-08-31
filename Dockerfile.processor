@@ -1,5 +1,7 @@
-# ─── Processor (Consumer) ───
-# Lightweight: only Scrapy + BeautifulSoup, no browser needed
+# ─── Discovery / Scraper / db-writer (Consumers) ───
+# Shared image for the discovery spider, scraper spider, and db-writer --
+# lightweight: only Scrapy + BeautifulSoup, no browser needed. The actual
+# command is set per-service in docker-compose.yml.
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -20,5 +22,5 @@ COPY db_writer.py /app/db_writer.py
 ENV PYTHONUNBUFFERED=1
 ENV DB_PATH=/app/data/products.db
 
-# Default command overridden by docker-compose for 10 replicas
-CMD ["scrapy", "crawl", "hafele_processor", "-s", "REDIS_URL=redis://hafele-redis:6379"]
+# Default command overridden per-service by docker-compose
+CMD ["scrapy", "crawl", "hafele_scraper", "-s", "REDIS_URL=redis://hafele-redis:6379"]
