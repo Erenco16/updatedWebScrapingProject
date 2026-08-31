@@ -21,9 +21,8 @@ services:
         # Track which container we're already following
         TRACK=/tmp/tailing.list
         : > "$$TRACK"
-        # Match every container spawned by this compose project + the two
-        # fixed-name infra containers (hafele-redis, selenium-hub).
-        MATCH='^hafele-|^updatedwebscrapingproject-|^selenium-hub$$'
+        # Match every container spawned by this compose project.
+        MATCH='^hafele-|^updatedwebscrapingproject-'
         while true; do
           for c in $$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E "$$MATCH" || true); do
             # skip self
@@ -61,6 +60,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - REDIS_QUEUE_KEY=hafele:api_urls
+      - DB_WRITE_QUEUE_KEY=hafele:db_write_queue
       - POLL_INTERVAL=30
       - RESTART_COOLDOWN=60
       - REPORTER_DRAIN_CONFIRM=3
@@ -70,13 +70,14 @@ services:
       - |
         set -u
         Q="$${REDIS_QUEUE_KEY:-hafele:api_urls}"
+        DBQ="$${DB_WRITE_QUEUE_KEY:-hafele:db_write_queue}"
         INTERVAL="$${POLL_INTERVAL:-30}"
         COOLDOWN="$${RESTART_COOLDOWN:-60}"
         CONFIRM_TICKS="$${REPORTER_DRAIN_CONFIRM:-3}"
         LAST_RESTART=0
         DRAIN_STREAK=0
         REPORTER_STARTED=0
-        echo "watchdog: watching '$$Q' every $${INTERVAL}s (cooldown $${COOLDOWN}s; reporter needs $${CONFIRM_TICKS} consecutive drain ticks)"
+        echo "watchdog: watching '$$Q' + '$$DBQ' every $${INTERVAL}s (cooldown $${COOLDOWN}s; reporter needs $${CONFIRM_TICKS} consecutive drain ticks)"
         while true; do
           sleep "$$INTERVAL"
           NOW=$$(date +%s)
@@ -87,13 +88,16 @@ services:
             continue
           fi
           QLEN=$$(docker exec hafele-redis redis-cli LLEN "$$Q" 2>/dev/null || echo 0)
+          DBQLEN=$$(docker exec hafele-redis redis-cli LLEN "$$DBQ" 2>/dev/null || echo 0)
           RUNNING=$$(docker ps --filter 'name=updatedwebscrapingproject-processor-' --format '{{.Names}}' | wc -l | tr -d ' ')
           EXITED=$$(docker ps -a --filter 'name=updatedwebscrapingproject-processor-' --filter 'status=exited' --format '{{.Names}}')
 
           # Any sign of remaining work resets the drain streak so a
           # temporary queue dip (or a false idle-exit before variant API
-          # URLs get re-enqueued) never fires the reporter.
-          if [ "$$QLEN" != "0" ] || [ "$$RUNNING" != "0" ]; then
+          # URLs get re-enqueued) never fires the reporter. This also
+          # guards against starting the reporter while db-writer still has
+          # a backlog of scraped items it hasn't persisted yet.
+          if [ "$$QLEN" != "0" ] || [ "$$DBQLEN" != "0" ] || [ "$$RUNNING" != "0" ]; then
             DRAIN_STREAK=0
           fi
 
@@ -112,13 +116,14 @@ services:
             continue
           fi
 
-          # Case 2: queue drained + no processors alive -> confirm drain
-          # across CONFIRM_TICKS polls then start the reporter. Re-run it
-          # if it exited early (previous premature compose start with the
-          # defensive drain check returning exit 1 leaves it in 'exited').
-          if [ "$$QLEN" = "0" ] && [ "$$RUNNING" -eq 0 ]; then
+          # Case 2: url queue + db-write queue both drained, no processors
+          # alive -> confirm drain across CONFIRM_TICKS polls then start
+          # the reporter. Re-run it if it exited early (previous premature
+          # compose start with the defensive drain check returning exit 1
+          # leaves it in 'exited').
+          if [ "$$QLEN" = "0" ] && [ "$$DBQLEN" = "0" ] && [ "$$RUNNING" -eq 0 ]; then
             DRAIN_STREAK=$$(( DRAIN_STREAK + 1 ))
-            echo "watchdog: drain observation $$DRAIN_STREAK/$$CONFIRM_TICKS (queue=0, processors=0)"
+            echo "watchdog: drain observation $$DRAIN_STREAK/$$CONFIRM_TICKS (queue=0, db_write_queue=0, processors=0)"
             if [ "$$DRAIN_STREAK" -lt "$$CONFIRM_TICKS" ] || [ "$$REPORTER_STARTED" -ne 0 ]; then
               continue
             fi
@@ -151,34 +156,6 @@ services:
       timeout: 3s
       retries: 5
 
-  selenium-hub:
-    image: seleniarm/hub:latest
-    container_name: selenium-hub
-    stop_grace_period: 5s
-    ports:
-      - "4444:4444"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4444/status"]
-      interval: 5s
-      timeout: 10s
-      retries: 5
-      start_period: 15s
-
-  chrome:
-    image: seleniarm/node-chromium:latest
-    # Scale Chrome nodes to match processor parallelism
-    stop_grace_period: 5s
-    shm_size: 2gb   # Chro
-    deploy:
-      replicas: 5
-    depends_on:
-      selenium-hub:
-        condition: service_healthy
-    environment:
-      - SE_EVENT_BUS_HOST=selenium-hub
-      - SE_EVENT_BUS_PUBLISH_PORT=4442
-      - SE_EVENT_BUS_SUBSCRIBE_PORT=4443
-
   # ─── Producer: discovers SKUs and pushes API URLs to Redis ───
   harvester:
     build:
@@ -188,14 +165,9 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      selenium-hub:
-        condition: service_healthy
-      chrome:
-        condition: service_started
     env_file:
       - .env
     environment:
-      - GRID_URL=http://selenium-hub:4444/wd/hub
       - REDIS_URL=redis://hafele-redis:6379
     volumes:
       - ./data:/app/data
@@ -214,21 +186,18 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      selenium-hub:
-        condition: service_healthy
-      chrome:
-        condition: service_started
       harvester:
         condition: service_completed_successfully
     env_file:
       - .env
     environment:
-      - GRID_URL=http://selenium-hub:4444/wd/hub
       - REDIS_URL=redis://hafele-redis:6379
       - COOKIE_REFRESH_INTERVAL=600
     command: ["python", "-m", "refresh_cookies"]
 
-  # ─── Consumers: 10 replicas that pop from Redis and process ───
+  # ─── Consumers: 10 replicas that pop from Redis and process. No longer
+  #     mount ./data -- they push scraped items to Redis instead of
+  #     writing SQLite directly (see db-writer below). ──────────────────
   processor:
     build:
       context: .
@@ -244,11 +213,34 @@ services:
       - .env
     environment:
       - REDIS_URL=redis://hafele-redis:6379
+      - PYTHONUNBUFFERED=1
+    command: ["python", "-m", "scrapy", "crawl", "hafele_processor", "-s", "REDIS_URL=redis://hafele-redis:6379", "-s", "LOG_LEVEL=INFO"]
+
+  # ─── Single dedicated SQLite writer. Ten processor containers writing to
+  #     the same products.db file concurrently (over the virtiofs-backed
+  #     ./data bind mount) silently lost most writes under load -- SQLite's
+  #     WAL mode needs shared-memory lock coordination between writers that
+  #     doesn't reliably work across separate container mount namespaces
+  #     here. One process draining a Redis queue and writing serially
+  #     removes the concurrent-writer scenario entirely. ─────────────────
+  db-writer:
+    build:
+      context: .
+      dockerfile: Dockerfile.processor
+    container_name: hafele-db-writer
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://hafele-redis:6379
       - DB_PATH=/app/data/products.db
       - PYTHONUNBUFFERED=1
     volumes:
       - ./data:/app/data
-    command: ["python", "-m", "scrapy", "crawl", "hafele_processor", "-s", "REDIS_URL=redis://hafele-redis:6379", "-s", "LOG_LEVEL=INFO"]
+    command: ["python", "-m", "db_writer"]
 
   # ─── Reporter: generates Excel & sends the completion email.
   #     No depends_on: the queue-watchdog is the sole trigger. It runs

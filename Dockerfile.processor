@@ -15,6 +15,7 @@ COPY scrapy.cfg /app/scrapy.cfg
 COPY src/ /app/src/
 COPY spiders/ /app/spiders/
 COPY database.py /app/database.py
+COPY db_writer.py /app/db_writer.py
 
 ENV PYTHONUNBUFFERED=1
 ENV DB_PATH=/app/data/products.db
