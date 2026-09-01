@@ -35,7 +35,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-QUEUE_KEY = "hafele:api_urls"
+QUEUE_KEY = "hafele:master_urls"
 HARVESTER_STATUS_KEY = "hafele:harvester:status"
 HARVESTER_TOTAL_KEY = "hafele:harvester:total_masters"
 
@@ -133,7 +133,9 @@ class TestRedisQueue:
         )
 
     def test_queue_items_are_valid_master_urls(self, redis_client, run_harvester):
-        """Assert each queue item is a valid master ViewProduct-Start URL."""
+        """Assert each queue item is a JSON envelope wrapping a valid
+        master ViewProduct-Start URL (see spiders/hafele_parsing.py)."""
+        import json
         import re
 
         items = redis_client.lrange(QUEUE_KEY, 0, -1)
@@ -146,7 +148,12 @@ class TestRedisQueue:
 
         invalid_items = []
         for item in items:
-            if not url_pattern.match(item):
+            try:
+                url = json.loads(item)["url"]
+            except (json.JSONDecodeError, KeyError, TypeError):
+                invalid_items.append(item[:120])
+                continue
+            if not url_pattern.match(url):
                 invalid_items.append(item[:120])
 
         assert len(invalid_items) == 0, (

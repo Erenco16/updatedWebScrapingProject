@@ -4,10 +4,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install Chromium + chromedriver for Selenium
+# Install Chromium + chromedriver for Selenium, plus Xvfb so SeleniumBase's
+# UC mode can drive a real (non-headless) browser inside the container --
+# headless mode is meaningfully less reliable against Cloudflare Turnstile.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium \
     chromium-driver \
+    xvfb \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -24,7 +27,6 @@ COPY database.py /app/database.py
 COPY refresh_cookies.py /app/refresh_cookies.py
 
 ENV PYTHONUNBUFFERED=1
-ENV GRID_URL=http://selenium-hub:4444/wd/hub
 ENV CODES_FILE=/app/data/product_codes.xlsx
 
 CMD ["python", "-m", "spiders.hafele_harvester"]

@@ -15,6 +15,7 @@ from datetime import date
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pandas as pd
+import redis
 from dotenv import load_dotenv
 
 from database import get_all_products, count_products
@@ -23,19 +24,49 @@ from src.send_mail import send_mail, send_mail_with_excel
 load_dotenv()
 
 OUTPUT_DIR = os.getenv("OUTPUT_DIR", "/app/data")
+REDIS_URL = os.getenv("REDIS_URL", "redis://hafele-redis:6379")
+MASTER_QUEUE_KEY = "hafele:master_urls"
+SCRAPE_QUEUE_KEY = "hafele:scrape_queue"
+DB_WRITE_QUEUE_KEY = "hafele:db_write_queue"
+ALLOW_UNCONFIRMED = os.getenv("ALLOW_UNCONFIRMED_REPORT", "").lower() in ("1", "true", "yes")
 
 
-def generate_excel() -> str:
-    """Read all products from SQLite and write an .xlsx file."""
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+def drain_is_confirmed():
+    """Return (ok, reason). Reporter refuses to do anything unless ok is True.
+
+    Guards against the compose `service_completed_successfully` trigger firing
+    on the first brief idle-exit of the discovery/scraper pools, which
+    produces a partial excel snapshot. Also stops the reporter from running
+    when the harvester hasn't set its status flag yet, or when db-writer
+    still has a backlog of scraped items it hasn't persisted yet. Override
+    with ALLOW_UNCONFIRMED_REPORT=1.
+    """
+    try:
+        rc = redis.from_url(REDIS_URL, decode_responses=True)
+        status = (rc.get("hafele:harvester:status") or "").strip()
+        master_qlen = int(rc.llen(MASTER_QUEUE_KEY) or 0)
+        scrape_qlen = int(rc.llen(SCRAPE_QUEUE_KEY) or 0)
+        db_write_qlen = int(rc.llen(DB_WRITE_QUEUE_KEY) or 0)
+    except Exception as e:
+        return False, f"Redis unreachable: {e}"
+    if status != "done":
+        return False, f"harvester status is {status!r}, expected 'done'"
+    if master_qlen != 0 or scrape_qlen != 0:
+        return False, f"queues still have work (master={master_qlen}, scrape={scrape_qlen})"
+    if db_write_qlen != 0:
+        return False, f"db-writer still has {db_write_qlen} items pending"
+    return True, "harvester=done, master=0, scrape=0, db_write=0"
+
+
+def _write_products_excel(filepath: str) -> int:
+    """Dump every product row from SQLite into `filepath`. Returns rows written.
+
+    Always reads fresh from the DB so a retry after a mismatch picks up
+    any writes that happened in between.
+    """
     rows = get_all_products()
-    total = count_products()
-
-    if not rows:
-        print("⚠️ No products found in database.")
-        return None
-
     df = pd.DataFrame(rows)
+
     # Drop internal id / scraped_at from final report for cleanliness
     drop_cols = ["id", "scraped_at", "is_group_product"]
     for col in drop_cols:
@@ -49,29 +80,77 @@ def generate_excel() -> str:
         cols = ["stock_code"] + cols
         df = df[cols]
 
+    df.to_excel(filepath, index=False)
+    return len(df)
+
+
+def _count_excel_rows(filepath: str) -> int:
+    """Read the Excel back and return its data-row count (-1 on read error)."""
+    try:
+        return pd.read_excel(filepath).shape[0]
+    except Exception as e:
+        print(f"⚠️ Could not read back Excel for verification: {e}")
+        return -1
+
+
+def generate_excel() -> str:
+    """Read all products from SQLite, write .xlsx, verify count matches DB.
+
+    Regenerates the Excel from the DB if the file's row count doesn't
+    match `count_products()` — that way any partially-written or stale
+    file gets rewritten with the full dataset. Retries once before giving
+    up (returns the path either way; the caller decides what to do).
+    """
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    db_total = count_products()
+
+    if db_total == 0:
+        print("⚠️ No products found in database.")
+        return None
+
     today = str(date.today()).replace("-", "_")
     filename = f"{today}_Hafele_Guncel_Stoklar.xlsx"
     filepath = os.path.join(OUTPUT_DIR, filename)
 
-    df.to_excel(filepath, index=False)
-    print(f"✅ Excel generated: {filepath} ({total} rows)")
+    written = _write_products_excel(filepath)
+    print(f"✅ Excel generated: {filepath} ({written} rows written; DB has {db_total})")
+
+    excel_rows = _count_excel_rows(filepath)
+    if excel_rows == db_total:
+        print(f"✅ Excel row count matches DB: {excel_rows} rows.")
+        return filepath
+
+    # Mismatch: regenerate once from the DB to be sure the file holds the
+    # entire dataset.
+    print(
+        f"⚠️ Excel row count ({excel_rows}) does not match DB ({db_total}). "
+        "Regenerating from the database."
+    )
+    db_total = count_products()
+    written = _write_products_excel(filepath)
+    excel_rows = _count_excel_rows(filepath)
+    if excel_rows == db_total:
+        print(f"✅ Excel regenerated and now matches DB: {excel_rows} rows.")
+    else:
+        print(
+            f"⛔ Excel still mismatches DB after regeneration: "
+            f"excel={excel_rows} db={db_total}. Sending anyway; investigate the DB/write path."
+        )
+
     return filepath
 
 
-def send_notification_emails(excel_path: str):
-    """Send the completion email (with the Excel attached) to all configured recipients."""
-    total = count_products()
-    recipients = [
-        r for r in [
-            os.getenv("gmail_receiver_email"),
-            os.getenv("gmail_receiver_email_2"),
-            os.getenv("informal_mail"),
-        ]
-        if r
-    ]
+def send_notification_emails(excel_path: str, recipient: str):
+    """Send the completion email (with the Excel attached) to informal_mail only.
 
-    if not recipients:
-        print("⚠️ No recipient env vars set; skipping email step.")
+    The gmail_receiver_email* addresses are intentionally NOT used here —
+    limiting delivery to informal_mail keeps test/dev runs from spamming
+    production stakeholders. Widen this list only after a full run has
+    been validated end-to-end.
+    """
+    total = count_products()
+    if not recipient:
+        print("⚠️ informal_mail env var not set; skipping email step.")
         return
 
     body = (
@@ -81,18 +160,37 @@ def send_notification_emails(excel_path: str):
     )
     subject = f"✅ Hafele Web Scraping Completed — {total} products"
 
-    for recipient in recipients:
-        try:
-            send_mail_with_excel(recipient, excel_path, subject=subject, body=body)
-            print(f"✅ Completion email + Excel sent to {recipient}")
-        except Exception as e:
-            print(f"❌ Failed to send Excel to {recipient}: {e}")
+    try:
+        send_mail_with_excel(recipient, excel_path, subject=subject, body=body)
+        print(f"✅ Completion email + Excel sent to {recipient}")
+    except Exception as e:
+        print(f"❌ Failed to send Excel to {recipient}: {e}")
 
 
 def main():
     print("=" * 60)
     print("📊 HAFELE REPORTER")
     print("=" * 60)
+    recipients = [
+        os.getenv("informal_mail"),
+        os.getenv("gmail_receiver_email"),
+        os.getenv("gmail_receiver_email_2")
+    ]
+
+    ok, reason = drain_is_confirmed()
+    if not ok:
+        if ALLOW_UNCONFIRMED:
+            print(f"⚠️ Drain NOT confirmed ({reason}); ALLOW_UNCONFIRMED_REPORT is set, continuing.")
+        else:
+            print(
+                f"⛔ Drain NOT confirmed: {reason}. "
+                "Refusing to generate a partial Excel / send a premature 'completed' email. "
+                "The queue-watchdog will restart me once the queue is truly empty. "
+                "Set ALLOW_UNCONFIRMED_REPORT=1 to override manually."
+            )
+            sys.exit(1)
+    else:
+        print(f"✅ Drain confirmed ({reason}); generating Excel + sending email.")
 
     total = count_products()
     print(f"📦 Products in database: {total}")
@@ -110,7 +208,8 @@ def main():
 
     excel_path = generate_excel()
     if excel_path:
-        send_notification_emails(excel_path)
+        for recipient in recipients:
+            send_notification_emails(excel_path, recipient)
         print("\n✅ Reporter finished.")
 
 

@@ -1,11 +1,9 @@
-"""Tests for HafeleProcessor URL routing and API building logic."""
-import pytest
-
-from spiders.hafele_processor import (
-    is_category_url,
+"""Tests for shared discovery/scraper URL routing and API-building logic."""
+from spiders.hafele_parsing import (
+    is_master_url,
+    is_article_table_url,
     is_api_url,
     build_api_url,
-    normalize_url,
     HAFELE_BASE,
     HAFELE_API_BASE,
 )
@@ -14,10 +12,14 @@ from spiders.hafele_processor import (
 class TestUrlClassification:
     """Test URL type detection."""
 
-    def test_category_url_detection(self):
-        url = "https://www.hafele.com.tr/tr/products/mobilya-kulplar-ve-kap-kollar-/10/"
-        assert is_category_url(url) is True
+    def test_master_url_detection(self):
+        url = (
+            "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/"
+            "tr_TR/-/TRY/ViewProduct-Start?SKU=P-02103503"
+        )
+        assert is_master_url(url) is True
         assert is_api_url(url) is False
+        assert is_article_table_url(url) is False
 
     def test_api_url_detection(self):
         url = (
@@ -26,10 +28,23 @@ class TestUrlClassification:
             "?SKU=10670470&ProductQuantity=20000&SynchronizationAjaxToken=1"
         )
         assert is_api_url(url) is True
-        assert is_category_url(url) is False
+        assert is_master_url(url) is False
+        assert is_article_table_url(url) is False
 
-    def test_non_category_url(self):
-        assert is_category_url("https://example.com/foo") is False
+    def test_article_table_url_detection(self):
+        url = (
+            "https://www.hafele.com.tr/prod-live/web/WFS/Haefele-HTR-Site/"
+            "tr_TR/-/TRY/ViewProduct-GetArticleTable?SKU=P-02103503"
+        )
+        assert is_article_table_url(url) is True
+        assert is_master_url(url) is False
+        assert is_api_url(url) is False
+
+    def test_unrelated_url(self):
+        url = "https://example.com/foo"
+        assert is_master_url(url) is False
+        assert is_api_url(url) is False
+        assert is_article_table_url(url) is False
 
 
 class TestApiUrlBuilding:
@@ -42,11 +57,4 @@ class TestApiUrlBuilding:
         assert "ProductQuantity=20000" in url
         assert "SynchronizationAjaxToken=1" in url
         assert url.startswith(HAFELE_API_BASE)
-
-    def test_normalize_url_absolute(self):
-        href = "/tr/products/foo/"
-        assert normalize_url(href) == f"{HAFELE_BASE}/tr/products/foo/"
-
-    def test_normalize_url_with_fragment(self):
-        href = "/tr/products/foo/#bar"
-        assert "#" not in normalize_url(href)
+        assert HAFELE_API_BASE.startswith(HAFELE_BASE)

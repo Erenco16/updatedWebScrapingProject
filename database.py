@@ -1,10 +1,21 @@
 """
 database.py
-SQLite persistence layer with thread-safe writes for concurrent consumers.
+SQLite persistence layer. Written to by a single dedicated process
+(db_writer.py) -- not by the processor replicas directly.
+
+Journal mode is deliberately left at SQLite's default (rollback journal),
+not WAL. WAL's lock coordination between connections relies on mmap'd
+shared memory (the "-shm" file), which is unreliable on the virtiofs bind
+mount this repo uses (macOS host -> colima VM -> container): even a single
+writer plus a separate fresh reader connection produced "disk I/O error"
+and "file is not a database" on this filesystem. The rollback journal
+uses plain POSIX file locks instead, which behave correctly here.
 """
 import sqlite3
 import threading
 import os
+import time
+from contextlib import suppress
 from datetime import datetime
 
 # Thread-local storage for connection pooling per thread
@@ -28,7 +39,6 @@ def _get_connection():
     if not hasattr(_thread_local, "conn") or _thread_local.conn is None:
         # timeout=30 seconds lets SQLite wait for the write lock instead of failing immediately
         _thread_local.conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
-        _thread_local.conn.execute("PRAGMA journal_mode=WAL;")
         _thread_local.conn.execute("PRAGMA busy_timeout=30000;")
     return _thread_local.conn
 
@@ -40,7 +50,6 @@ def init_schema():
         if _schema_initialized:
             return
         conn = sqlite3.connect(DB_PATH, timeout=30.0)
-        conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA busy_timeout=30000;")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS products (
@@ -101,51 +110,61 @@ def save_product(data: dict) -> bool:
         is_group_product (0/1)
     """
     init_schema()
-    conn = _get_connection()
-    try:
-        conn.execute(
-            """
-            INSERT INTO products (
-                sku, stock_code,
-                kdv_haric_tavsiye_edilen_perakende_fiyat,
-                kdv_haric_net_fiyat,
-                kdv_haric_satis_fiyati,
-                stok_durumu,
-                stock_amount,
-                product_description,
-                is_group_product,
-                scraped_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(sku) DO UPDATE SET
-                stock_code=excluded.stock_code,
-                kdv_haric_tavsiye_edilen_perakende_fiyat=excluded.kdv_haric_tavsiye_edilen_perakende_fiyat,
-                kdv_haric_net_fiyat=excluded.kdv_haric_net_fiyat,
-                kdv_haric_satis_fiyati=excluded.kdv_haric_satis_fiyati,
-                stok_durumu=excluded.stok_durumu,
-                stock_amount=excluded.stock_amount,
-                product_description=excluded.product_description,
-                is_group_product=excluded.is_group_product,
-                scraped_at=excluded.scraped_at
-            """,
-            (
-                data.get("sku", ""),
-                data.get("stockCode", data.get("sku", "")),
-                data.get("kdv_haric_tavsiye_edilen_perakende_fiyat"),
-                data.get("kdv_haric_net_fiyat"),
-                data.get("kdv_haric_satis_fiyati"),
-                data.get("stok_durumu"),
-                data.get("stock_amount"),
-                data.get("product_description"),
-                1 if data.get("is_group_product") else 0,
-                datetime.now().isoformat(),
-            ),
-        )
-        conn.commit()
-        print(f"💾 SQLite saved SKU={data.get('sku')} | stok_durumu={data.get('stok_durumu')} | stock_amount={data.get('stock_amount')}")
-        return True
-    except Exception as e:
-        print(f"❌ SQLite save error for SKU={data.get('sku')}: {e}")
-        return False
+    params = (
+        data.get("sku", ""),
+        data.get("stockCode", data.get("sku", "")),
+        data.get("kdv_haric_tavsiye_edilen_perakende_fiyat"),
+        data.get("kdv_haric_net_fiyat"),
+        data.get("kdv_haric_satis_fiyati"),
+        data.get("stok_durumu"),
+        data.get("stock_amount"),
+        data.get("product_description"),
+        1 if data.get("is_group_product") else 0,
+        datetime.now().isoformat(),
+    )
+    attempts = 3
+    for attempt in range(1, attempts + 1):
+        conn = _get_connection()
+        try:
+            conn.execute(
+                """
+                INSERT INTO products (
+                    sku, stock_code,
+                    kdv_haric_tavsiye_edilen_perakende_fiyat,
+                    kdv_haric_net_fiyat,
+                    kdv_haric_satis_fiyati,
+                    stok_durumu,
+                    stock_amount,
+                    product_description,
+                    is_group_product,
+                    scraped_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(sku) DO UPDATE SET
+                    stock_code=excluded.stock_code,
+                    kdv_haric_tavsiye_edilen_perakende_fiyat=excluded.kdv_haric_tavsiye_edilen_perakende_fiyat,
+                    kdv_haric_net_fiyat=excluded.kdv_haric_net_fiyat,
+                    kdv_haric_satis_fiyati=excluded.kdv_haric_satis_fiyati,
+                    stok_durumu=excluded.stok_durumu,
+                    stock_amount=excluded.stock_amount,
+                    product_description=excluded.product_description,
+                    is_group_product=excluded.is_group_product,
+                    scraped_at=excluded.scraped_at
+                """,
+                params,
+            )
+            conn.commit()
+            print(f"💾 SQLite saved SKU={data.get('sku')} | stok_durumu={data.get('stok_durumu')} | stock_amount={data.get('stock_amount')}")
+            return True
+        except Exception as e:
+            print(f"❌ SQLite save error for SKU={data.get('sku')} (attempt {attempt}/{attempts}): {e}")
+            # Drop the cached connection -- if the underlying file handle is
+            # the problem, reusing it would just fail the same way forever.
+            with suppress(Exception):
+                conn.close()
+            _thread_local.conn = None
+            if attempt == attempts:
+                return False
+            time.sleep(0.5 * attempt)
 
 
 def get_all_products():
