@@ -4,14 +4,62 @@
 - RedisCookieMiddleware: pulls fresh session cookies from Redis on a short
   TTL and attaches them to every request. Pairs with the cookie-refresher
   sidecar so long-running processors don't drift onto expired sessions.
+- RequestsDownloadMiddleware: fetch via python-requests in a worker thread
+  instead of Twisted's built-in HTTP client. Cloudflare fingerprints and
+  blocks Twisted's TLS/connection stack on this site even with identical
+  cookies/headers that pass through requests, curl, and a real browser.
 """
 import json
 import os
 import time
 import random
 import redis
+import socket
+import urllib3.util.connection as _urllib3_connection
+import requests as py_requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from scrapy.http import HtmlResponse
 from scrapy import signals
+from twisted.internet.threads import deferToThread
+
+# Force IPv4 for all urllib3-backed requests (requests library).
+# The Docker network on this host only routes IPv4 outbound reliably;
+# getent returns AAAA records for hafele.com.tr, and requests then tries
+# IPv6 first and can fail immediately with "Network is unreachable"
+# (especially during the first seconds after a container starts).
+# Twisted's HTTP client happened to fall back to IPv4 on its own.
+_urllib3_connection.allowed_gai_family = lambda: socket.AF_INET
+
+
+def _make_requests_session() -> py_requests.Session:
+    """A Session with urllib3-level retries for connect/read errors only.
+
+    We deliberately do NOT retry HTTP status codes here — Scrapy's
+    RetryMiddleware already handles RETRY_HTTP_CODES on the returned
+    Response. Retrying connect/read errors here prevents a brief network
+    hiccup (e.g. right at container startup) from being counted as a
+    request "attempt" against the payload's 3-attempt cap, which
+    otherwise burns through the whole queue in seconds.
+    """
+    retry = Retry(
+        total=5,
+        connect=5,
+        read=3,
+        status=0,
+        backoff_factor=1.0,       # sleeps: 0, 1, 2, 4, 8 seconds
+        status_forcelist=[],
+        raise_on_status=False,
+        allowed_methods=frozenset(["GET", "POST", "HEAD"]),
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=32, pool_maxsize=32)
+    sess = py_requests.Session()
+    sess.mount("https://", adapter)
+    sess.mount("http://", adapter)
+    return sess
+
+
+_SESSION = _make_requests_session()
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -240,3 +288,75 @@ class RedisCookieMiddleware:
         merged.update(current)
         request.cookies = merged
         return None
+
+
+# ─── Cloudflare-safe fetch via python-requests ────────────────────
+
+class RequestsDownloadMiddleware:
+    """Fetch every request via python-requests in a worker thread instead of
+    Twisted's built-in HTTP client.
+
+    Twisted's TLS/connection stack gets fingerprinted and blocked by
+    Cloudflare on this site even with byte-identical cookies/headers that
+    pass fine through requests, curl, and a real browser (confirmed by
+    testing all four directly). This middleware swaps out only the actual
+    bytes-on-the-wire fetch; the returned Response flows through Scrapy's
+    normal pipeline (RetryMiddleware, item pipeline, spider callbacks)
+    unchanged.
+
+    Register at a priority AFTER RedisCookieMiddleware (100) — e.g. 150 —
+    so cookies are already merged onto request.cookies before we fetch,
+    and so Scrapy's built-in CookiesMiddleware (700) is short-circuited
+    (returning a Response from process_request stops the chain).
+    """
+
+    # Response headers requests has already consumed on our behalf; leaving
+    # them in place makes Scrapy's HttpCompressionMiddleware try to gunzip
+    # an already-decompressed body ("Not a gzipped file" error).
+    _STRIP_RESPONSE_HEADERS = {"content-encoding", "content-length", "transfer-encoding"}
+
+    def __init__(self, timeout: float):
+        self.timeout = timeout
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        return cls(timeout=crawler.settings.getfloat("DOWNLOAD_TIMEOUT", 60))
+
+    def process_request(self, request, spider):
+        # Run blocking requests.request in a thread so we don't stall the
+        # Scrapy/Twisted reactor. Returning a Deferred is soft-deprecated
+        # but still supported; the `async def` variant fails under
+        # Scrapy's asyncio reactor with "Task got bad yield: <Deferred>"
+        # because a raw Twisted Deferred isn't asyncio-awaitable there.
+        return deferToThread(self._fetch, request)
+
+    def _fetch(self, request):
+        headers = {
+            k.decode("latin1"): b", ".join(v).decode("latin1")
+            for k, v in request.headers.items()
+        }
+        cookies = dict(request.cookies) if isinstance(request.cookies, dict) else {}
+        method = request.method or "GET"
+        body = request.body if request.body else None
+
+        resp = _SESSION.request(
+            method,
+            request.url,
+            headers=headers,
+            cookies=cookies,
+            data=body,
+            timeout=self.timeout,
+            allow_redirects=True,
+        )
+
+        response_headers = [
+            (k, v) for k, v in resp.headers.items()
+            if k.lower() not in self._STRIP_RESPONSE_HEADERS
+        ]
+        return HtmlResponse(
+            url=resp.url,
+            body=resp.content,
+            status=resp.status_code,
+            headers=response_headers,
+            request=request,
+        )

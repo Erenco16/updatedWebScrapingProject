@@ -51,17 +51,45 @@ API_SKU_RE = re.compile(r"SKU=(\d+)")
 
 DEFAULT_STATUS_UNKNOWN = "Stok bilgisi bulunamadi"
 MAX_ATTEMPTS = 3
+# Network errors get their own generous cap so a transient outage (docker
+# network flapping, brief DNS blip, upstream restart) doesn't burn through
+# the 3-attempt application budget in seconds.
+MAX_NET_ATTEMPTS = 15
 
 
-def requeue_or_drop(redis_client, queue_key: str, payload: dict, logger, label: str) -> None:
-    """Re-push `payload` onto `queue_key` with an incremented attempt count,
-    or give up (log + drop) once MAX_ATTEMPTS is exceeded."""
-    attempt = payload.get("attempt", 0) + 1
-    if attempt > MAX_ATTEMPTS:
-        logger.error(f"{label}: giving up after {MAX_ATTEMPTS} attempts")
-        return
-    redis_client.lpush(queue_key, json.dumps({**payload, "attempt": attempt}))
-    logger.warning(f"{label}: re-queued (attempt {attempt}/{MAX_ATTEMPTS})")
+def requeue_or_drop(
+    redis_client,
+    queue_key: str,
+    payload: dict,
+    logger,
+    label: str,
+    count_attempt: bool = True,
+) -> None:
+    """Re-push `payload` onto `queue_key`.
+
+    - `count_attempt=True` (application error, e.g. 403/5xx after retries,
+      "no article numbers found"): bump `attempt`, drop after MAX_ATTEMPTS.
+    - `count_attempt=False` (transport/network error before we ever got a
+      Response): bump `net_attempt` instead, drop only after
+      MAX_NET_ATTEMPTS so a bad network window doesn't silently trash the
+      queue.
+    """
+    if count_attempt:
+        attempt = payload.get("attempt", 0) + 1
+        if attempt > MAX_ATTEMPTS:
+            logger.error(f"{label}: giving up after {MAX_ATTEMPTS} attempts")
+            return
+        redis_client.lpush(queue_key, json.dumps({**payload, "attempt": attempt}))
+        logger.warning(f"{label}: re-queued (attempt {attempt}/{MAX_ATTEMPTS})")
+    else:
+        net_attempt = payload.get("net_attempt", 0) + 1
+        if net_attempt > MAX_NET_ATTEMPTS:
+            logger.error(f"{label}: giving up after {MAX_NET_ATTEMPTS} network attempts")
+            return
+        redis_client.lpush(queue_key, json.dumps({**payload, "net_attempt": net_attempt}))
+        logger.warning(
+            f"{label}: re-queued (net_attempt {net_attempt}/{MAX_NET_ATTEMPTS}, network error)"
+        )
 
 
 def get_redis():

@@ -51,6 +51,7 @@ class HafeleScraperSpider(RedisSpider):
         "DOWNLOADER_MIDDLEWARES": {
             "scrapy.downloadermiddlewares.retry.RetryMiddleware": 90,
             "spiders.middlewares.RedisCookieMiddleware": 100,
+            "spiders.middlewares.RequestsDownloadMiddleware": 150,
         },
     }
 
@@ -120,7 +121,8 @@ class HafeleScraperSpider(RedisSpider):
         sku_m = API_SKU_RE.search(payload["url"])
         sku = sku_m.group(1) if sku_m else "?"
         self.logger.warning(f"API SKU={sku} request failed: {failure.value}")
+        # Transport failure — don't burn an application attempt.
         requeue_or_drop(
             get_redis(), SCRAPE_QUEUE_KEY, payload, self.logger,
-            f"API SKU={sku} (network error)",
+            f"API SKU={sku} (network error)", count_attempt=False,
         )

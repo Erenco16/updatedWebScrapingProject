@@ -55,6 +55,7 @@ class HafeleDiscoverySpider(RedisSpider):
         "DOWNLOADER_MIDDLEWARES": {
             "scrapy.downloadermiddlewares.retry.RetryMiddleware": 90,
             "spiders.middlewares.RedisCookieMiddleware": 100,
+            "spiders.middlewares.RequestsDownloadMiddleware": 150,
         },
     }
 
@@ -153,7 +154,13 @@ class HafeleDiscoverySpider(RedisSpider):
     def on_master_failure(self, failure):
         payload = failure.request.meta["payload"]
         self.logger.warning(f"Master request failed: {failure.value}")
-        requeue_or_drop(get_redis(), MASTER_QUEUE_KEY, payload, self.logger, "Master (network error)")
+        # Errback fires only on transport failure (no Response received).
+        # Requeue without consuming an application "attempt" — see
+        # requeue_or_drop docstring.
+        requeue_or_drop(
+            get_redis(), MASTER_QUEUE_KEY, payload, self.logger,
+            "Master (network error)", count_attempt=False,
+        )
 
     def on_article_table_failure(self, failure):
         payload = failure.request.meta["payload"]
@@ -161,5 +168,5 @@ class HafeleDiscoverySpider(RedisSpider):
         self.logger.warning(f"ArticleTable request failed for {master_sku}: {failure.value}")
         requeue_or_drop(
             get_redis(), MASTER_QUEUE_KEY, payload, self.logger,
-            f"ArticleTable {master_sku} (network error)",
+            f"ArticleTable {master_sku} (network error)", count_attempt=False,
         )

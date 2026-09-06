@@ -18,9 +18,26 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import socket
+import urllib3.util.connection as _urllib3_connection
 import redis
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from dotenv import load_dotenv
+
+# Force IPv4 + retry connection errors: Docker network IPv6 routing can be
+# briefly unavailable right after container startup (see middlewares.py).
+_urllib3_connection.allowed_gai_family = lambda: socket.AF_INET
+_HTTP = requests.Session()
+_HTTP.mount(
+    "https://",
+    HTTPAdapter(max_retries=Retry(
+        total=5, connect=5, read=3, status=0,
+        backoff_factor=1.0, raise_on_status=False,
+        allowed_methods=frozenset(["GET", "POST", "HEAD"]),
+    )),
+)
 
 from database import reset_database
 from spiders.headers import BROWSER_HEADERS, USER_AGENT
@@ -129,7 +146,7 @@ def login_and_save_cookies(redis_client) -> dict:
 
 
 def fetch(url: str, cookies: dict | None = None) -> bytes:
-    resp = requests.get(url, headers=BROWSER_HEADERS, cookies=cookies or {}, timeout=60)
+    resp = _HTTP.get(url, headers=BROWSER_HEADERS, cookies=cookies or {}, timeout=60)
     resp.raise_for_status()
     return resp.content
 
