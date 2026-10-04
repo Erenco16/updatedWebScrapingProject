@@ -8,6 +8,10 @@ COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY src/ /app/src/
+# reporter now imports spiders.models (SKU dot formatter) and
+# spiders.dinler_log (end-of-run fallback summary), so it needs the
+# spiders package in the image too.
+COPY spiders/ /app/spiders/
 COPY database.py /app/database.py
 COPY reporter.py /app/reporter.py
 

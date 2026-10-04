@@ -12,6 +12,15 @@ from spiders.headers import (
 class TestHeadersConstants:
     """Verify headers match expected real-browser values."""
 
+    @pytest.mark.skip(
+        reason=(
+            "DEPRECATED: manual User-Agent pinning is replaced by Scrapling's "
+            "native `impersonate` feature (curl_cffi-backed TLS/UA fingerprint). "
+            "The USER_AGENT constant is still used by the Selenium login path "
+            "but its specific Chrome version is no longer load-bearing. "
+            "See tests/test_impersonation.py for the new coverage."
+        )
+    )
     def test_user_agent_is_linux_chrome(self):
         assert "Linux" in USER_AGENT
         assert "Chrome/143" in USER_AGENT

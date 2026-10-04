@@ -19,17 +19,28 @@ on a permanent failure (Scrapy's own RETRY_TIMES exhausted, or a
 downloader-level error), re-push a fresh entry onto the same queue with
 an incremented attempt count, up to MAX_ATTEMPTS, instead of the old
 behaviour of silently dropping it.
+
+HTML parsing uses Scrapling's Adaptor, not BeautifulSoup. Adaptor is a
+drop-in replacement with CSS/XPath selectors plus adaptive selector
+tracking (``auto_save=True`` fingerprints each match, ``adaptive=True``
+re-finds elements by fingerprint when the raw selector drifts due to a
+layout redesign). Fingerprints live on the mounted data volume so they
+survive container restarts.
 """
 import json
 import os
-import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import redis
-from bs4 import BeautifulSoup
 from dotenv import load_dotenv
+
+# Scrapling renamed the parsing entry point ``Adaptor`` -> ``Selector`` in
+# 0.4; both expose the same CSS/XPath + adaptive-selector surface.
+from scrapling import Selector
+
+from spiders.models import format_sku_with_dots
 
 load_dotenv()
 
@@ -45,6 +56,15 @@ HAFELE_API_BASE = (
     "ViewProduct-GetPriceAndAvailabilityInformationPDS"
 )
 
+# Dinler Mobilya's public stock API. Used as a fallback whenever Hafele's
+# own availability endpoint returns no stock row for a given variant
+# (stok_durumu == DEFAULT_STATUS_UNKNOWN). Takes the dotted SKU form
+# (e.g. 901.98.256), not the digits-only form Hafele's API uses.
+DINLER_STOCK_URL = "https://www.dinlermobilya.com.tr/api/stock"
+
+
+import re  # noqa: E402  (kept after dotenv import for readability)
+
 MASTER_URL_RE = re.compile(r"ViewProduct-Start\?SKU=(P-\d+)")
 ARTICLE_TABLE_RE = re.compile(r"ViewProduct-GetArticleTable\?[^\"']+")
 API_SKU_RE = re.compile(r"SKU=(\d+)")
@@ -55,6 +75,66 @@ MAX_ATTEMPTS = 3
 # network flapping, brief DNS blip, upstream restart) doesn't burn through
 # the 3-attempt application budget in seconds.
 MAX_NET_ATTEMPTS = 15
+
+# Where Scrapling persists its adaptive-selector fingerprints. Must sit
+# on the mounted ./data volume so the fingerprints survive container
+# recreation; otherwise auto_match degrades back to raw-selector matching
+# after every rebuild.
+_SCRAPLING_STORAGE_DIR = os.getenv("SCRAPLING_STORAGE_DIR", "/app/data")
+try:
+    os.makedirs(_SCRAPLING_STORAGE_DIR, exist_ok=True)
+except OSError:
+    pass
+SCRAPLING_STORAGE_FILE = os.path.join(_SCRAPLING_STORAGE_DIR, "scrapling_tracker.db")
+
+# Pass to every `.css()` call: save a fingerprint whenever a selector
+# matches so we keep learning the real DOM shape, and transparently
+# fall back to adaptive match when the raw selector no longer resolves.
+# Keep as module-level constant so a Scrapling kwarg change only needs
+# one edit site.
+_ADAPTIVE_KW = dict(auto_save=True, adaptive=True)
+
+
+def _selector(html: bytes | str, url: str | None = None) -> Selector:
+    """Build a Scrapling Selector with adaptive-selector tracking enabled.
+
+    Centralised so every parser in this file shares the same storage
+    file configuration — otherwise fingerprints would be scattered
+    across tempfiles and defeat the whole point.
+
+    ``adaptive=True`` on the Selector enables Scrapling's whole-document
+    fingerprint tracker; per-call ``auto_save`` / ``adaptive`` kwargs on
+    ``.css()`` then save the fingerprint on match and fall back to
+    adaptive match when the raw selector no longer resolves.
+    """
+    content = html.decode("utf-8", errors="replace") if isinstance(html, bytes) else html
+    try:
+        return Selector(
+            content=content,
+            url=url or HAFELE_BASE,
+            adaptive=True,
+            storage_args={"storage_file": SCRAPLING_STORAGE_FILE},
+        )
+    except (TypeError, ValueError):
+        # Guard against Scrapling kwarg renames between versions.
+        return Selector(content=content, url=url or HAFELE_BASE, adaptive=True)
+
+
+def _css_first(root, selector: str, **kwargs):
+    """Scrapling 0.4 dropped ``.css_first()``; this is the equivalent
+    ``.css(..)[0] or None`` the whole parser can share."""
+    if root is None:
+        return None
+    try:
+        nodes = root.css(selector, **kwargs)
+    except Exception:
+        return None
+    if not nodes:
+        return None
+    try:
+        return nodes[0]
+    except (IndexError, TypeError):
+        return None
 
 
 def requeue_or_drop(
@@ -108,6 +188,10 @@ def is_api_url(url: str) -> bool:
     return "ViewProduct-GetPriceAndAvailabilityInformationPDS" in url
 
 
+def is_dinler_url(url: str) -> bool:
+    return url.startswith(DINLER_STOCK_URL)
+
+
 def build_api_url(article_no: str) -> str:
     return (
         f"{HAFELE_API_BASE}?SKU={article_no}"
@@ -115,47 +199,81 @@ def build_api_url(article_no: str) -> str:
     )
 
 
+def build_dinler_url(article_no: str) -> str:
+    """Dinler expects the dotted SKU format (901.98.256), not the
+    digits-only form Hafele's internal API uses."""
+    return f"{DINLER_STOCK_URL}?sku={format_sku_with_dots(article_no)}&quantity=1"
+
+
+def _safe_text(node) -> str:
+    """Scrapling nodes expose ``.text`` as a property that can be ``None``
+    on empty tags; this normalises to a stripped string so callers never
+    need to guard against ``NoneType.strip``."""
+    if node is None:
+        return ""
+    try:
+        txt = node.text
+    except Exception:
+        return ""
+    if txt is None:
+        return ""
+    try:
+        return txt.clean() if hasattr(txt, "clean") else str(txt).strip()
+    except Exception:
+        return str(txt).strip() if txt else ""
+
+
 def extract_article_numbers(html: bytes) -> list:
-    """Return all article numbers from div.row.list-view.article data-value."""
-    soup = BeautifulSoup(html, "html.parser")
-    numbers = []
-    seen = set()
-    for div in soup.find_all("div", class_="row"):
-        classes = div.get("class", [])
-        if "list-view" in classes and "article" in classes:
-            dv = (div.get("data-value") or "").strip()
-            if dv.isdigit() and dv not in seen:
-                seen.add(dv)
-                numbers.append(dv)
+    """Return all article numbers from div.row.list-view.article data-value.
+
+    Uses Scrapling's adaptive selectors so a layout rename (e.g. the row
+    class changing from ``list-view`` to ``variant-row``) is handled
+    transparently once the fingerprint for that element has been saved.
+    """
+    page = _selector(html)
+    numbers: list[str] = []
+    seen: set[str] = set()
+    nodes = page.css("div.row.list-view.article", **_ADAPTIVE_KW) or []
+    for div in nodes:
+        dv = (div.attrib.get("data-value") or "").strip() if div else ""
+        if dv.isdigit() and dv not in seen:
+            seen.add(dv)
+            numbers.append(dv)
     return numbers
 
 
 def extract_master_metadata(html: bytes) -> dict:
-    soup = BeautifulSoup(html, "html.parser")
-    name = None
-    h1 = soup.find("h1", class_="productHeadline")
-    if h1:
-        name = h1.get_text(strip=True) or None
+    page = _selector(html)
+
+    name = _safe_text(_css_first(page, "h1.productHeadline", **_ADAPTIVE_KW)) or None
     if not name:
-        title = soup.find("title")
-        if title:
-            name = title.get_text(strip=True).split(" - ")[0] or None
+        title_text = _safe_text(_css_first(page, "title", **_ADAPTIVE_KW))
+        if title_text:
+            name = title_text.split(" - ")[0] or None
 
-    subline = None
-    sub_el = soup.select_one("h2.productSubline, .article-number")
-    if sub_el:
-        raw = sub_el.get_text(" ", strip=True)
-        subline = re.sub(r"\s*Ürün kopyalandı\.?\s*", "", raw).strip() or None
+    subline_raw = (
+        _safe_text(_css_first(page, "h2.productSubline", **_ADAPTIVE_KW))
+        or _safe_text(_css_first(page, ".article-number", **_ADAPTIVE_KW))
+    )
+    if subline_raw:
+        subline = re.sub(r"\s*Ürün kopyalandı\.?\s*", "", subline_raw).strip() or None
+    else:
+        subline = None
 
+    meta_desc_node = _css_first(page, "meta[name='description']", **_ADAPTIVE_KW)
     meta_desc = None
-    md = soup.find("meta", {"name": "description"})
-    if md:
-        meta_desc = (md.get("content") or "").strip() or None
+    if meta_desc_node is not None:
+        content = (meta_desc_node.attrib.get("content") or "").strip()
+        meta_desc = content or None
 
     return {"name": name, "subline": subline, "meta_description": meta_desc}
 
 
 def extract_article_table_url(html: bytes) -> str | None:
+    # Regex over the raw HTML is still the right call here: the URL lives
+    # inside inline JS/attributes, not inside a DOM text node, so CSS/XPath
+    # selectors would be the wrong shape. Keeping this as a plain regex
+    # scan.
     m = ARTICLE_TABLE_RE.search(html.decode("utf-8", errors="replace"))
     if not m:
         return None
@@ -174,13 +292,14 @@ def _clean_price(txt: str | None) -> str | None:
     return txt
 
 
-def parse_price_from_html(soup: BeautifulSoup) -> dict:
+def parse_price_from_html(html: bytes) -> dict:
     """Extract price strings from the visible spans in the API HTML.
 
     Order (matches legacy): [net, sales, suggested_retail].
     """
-    spans = soup.select("span.price")
-    values = [_clean_price(s.get_text(strip=True)) for s in spans]
+    page = _selector(html)
+    spans = page.css("span.price", **_ADAPTIVE_KW) or []
+    values = [_clean_price(_safe_text(s)) for s in spans]
     return {
         "kdv_haric_net_fiyat": values[0] if len(values) > 0 else None,
         "kdv_haric_satis_fiyati": values[1] if len(values) > 1 else None,
@@ -188,7 +307,7 @@ def parse_price_from_html(soup: BeautifulSoup) -> dict:
     }
 
 
-def parse_stock_from_values_tr(soup: BeautifulSoup) -> tuple[str | None, int | None]:
+def parse_stock_from_values_tr(html: bytes) -> tuple[str | None, int | None]:
     """Iterate tr.values-tr rows to find (stok_durumu, stock_amount).
 
     Priority (mirrors legacy handle_singular_product):
@@ -196,15 +315,17 @@ def parse_stock_from_values_tr(soup: BeautifulSoup) -> tuple[str | None, int | N
       - Otherwise use the first row that has both a qty AND an availability flag
       - Rows without a valid qty or without a flag are skipped
     """
+    page = _selector(html)
     preferred = None
     fallback = None
-    for row in soup.select("tr.values-tr"):
-        qty_el = row.select_one("td.qty-available")
-        avail_el = row.select_one("td.requestedPackageStatus .availability-flag")
-        if not qty_el or not avail_el:
+    rows = page.css("tr.values-tr", **_ADAPTIVE_KW) or []
+    for row in rows:
+        qty_text = _safe_text(_css_first(row, "td.qty-available", **_ADAPTIVE_KW))
+        avail_text = _safe_text(
+            _css_first(row, "td.requestedPackageStatus .availability-flag", **_ADAPTIVE_KW)
+        )
+        if not qty_text and not avail_text:
             continue
-        qty_text = qty_el.get_text(strip=True)
-        avail_text = avail_el.get_text(strip=True)
         if not avail_text:
             continue
         qty = int(qty_text) if qty_text.isdigit() else None
@@ -216,11 +337,33 @@ def parse_stock_from_values_tr(soup: BeautifulSoup) -> tuple[str | None, int | N
     return preferred or fallback or (None, None)
 
 
-def parse_stock_fallback(soup: BeautifulSoup) -> str | None:
+def parse_stock_fallback(html: bytes) -> str | None:
     """Fallback: use #productAvailabilityInformation .availability-flag text."""
-    el = soup.select_one("#productAvailabilityInformation .availability-flag")
-    if el:
-        txt = el.get_text(strip=True)
-        return txt or None
-    return None
+    page = _selector(html)
+    node = _css_first(
+        page, "#productAvailabilityInformation .availability-flag", **_ADAPTIVE_KW
+    )
+    txt = _safe_text(node)
+    return txt or None
 
+
+def normalize_stock_status(stok_durumu: str | None, stock_amount: int | None) -> str:
+    """Collapse the free-form Turkish availability label into a bounded
+    'In Stock' / 'Out of Stock' / 'Unknown' value for consumers that just
+    want a boolean-ish view (e.g. BI tooling, filtering)."""
+    if not stok_durumu or stok_durumu == DEFAULT_STATUS_UNKNOWN:
+        return "Unknown"
+    lowered = stok_durumu.lower()
+    if "stokta mevcut" in lowered or "in_stock" in lowered or "in stock" in lowered:
+        return "In Stock"
+    if (
+        "stokta yok" in lowered
+        or "out_of_stock" in lowered
+        or "out of stock" in lowered
+    ):
+        return "Out of Stock"
+    if stock_amount is not None and stock_amount > 0:
+        return "In Stock"
+    if stock_amount == 0:
+        return "Out of Stock"
+    return stok_durumu  # keep the original label as-is when it carries info

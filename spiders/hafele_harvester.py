@@ -19,31 +19,49 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import socket
-import urllib3.util.connection as _urllib3_connection
+import time
 import redis
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 
-# Force IPv4 + retry connection errors: Docker network IPv6 routing can be
-# briefly unavailable right after container startup (see middlewares.py).
-_urllib3_connection.allowed_gai_family = lambda: socket.AF_INET
-_HTTP = requests.Session()
-_HTTP.mount(
-    "https://",
-    HTTPAdapter(max_retries=Retry(
-        total=5, connect=5, read=3, status=0,
-        backoff_factor=1.0, raise_on_status=False,
-        allowed_methods=frozenset(["GET", "POST", "HEAD"]),
-    )),
-)
+# Force IPv4 globally: Docker network IPv6 routing can be briefly
+# unavailable right after container startup (see middlewares.py for the
+# full history).
+_orig_getaddrinfo = socket.getaddrinfo
 
-from database import reset_database
-from spiders.headers import BROWSER_HEADERS, USER_AGENT
-from spiders.hafele_parsing import MASTER_QUEUE_KEY, SCRAPE_QUEUE_KEY
-from src.hafele_login import login_and_get_cookies, save_cookies_to_redis
-from src.send_mail import send_mail
+
+def _ipv4_only_getaddrinfo(host, port, *args, **kwargs):
+    try:
+        results = _orig_getaddrinfo(host, port, *args, **kwargs)
+    except Exception:
+        raise
+    v4 = [r for r in results if r[0] == socket.AF_INET]
+    return v4 or results
+
+
+socket.getaddrinfo = _ipv4_only_getaddrinfo
+
+# Scrapling is the project-mandated HTTP client; no raw `requests` here.
+import random  # noqa: E402
+
+from scrapling.fetchers import Fetcher  # noqa: E402
+
+from database import reset_database  # noqa: E402
+from spiders.headers import BROWSER_HEADERS, USER_AGENT, IMPERSONATION_PROFILES  # noqa: E402
+
+
+def _pick_impersonation_profile() -> str:
+    """Return one of the Scrapling-supported browser aliases. See
+    ``spiders.middlewares._pick_impersonation_profile`` for context."""
+    return random.choice(IMPERSONATION_PROFILES)
+
+from spiders.hafele_parsing import MASTER_QUEUE_KEY, SCRAPE_QUEUE_KEY  # noqa: E402
+
+# ``src.hafele_login`` pulls in SeleniumBase (needs sbvirtualdisplay +
+# Chromium) and ``src.send_mail`` pulls SMTP config. Both are present in
+# the Docker image but not necessarily in a bare pytest venv, so we
+# import them lazily inside the two functions that actually need them.
+# This keeps unit tests for push_master_urls / fetch importable without
+# the full runtime stack.
 
 DATA_DIR = os.getenv("DATA_DIR", "/app/data")
 
@@ -110,6 +128,7 @@ def send_start_notification() -> None:
         f"Started at: {started}"
     )
     try:
+        from src.send_mail import send_mail  # lazy; see module-level comment
         send_mail(
             informal_mail,
             subject="🚀 Hafele Web Scraping Started",
@@ -132,6 +151,7 @@ def login_and_save_cookies(redis_client) -> dict:
         )
 
     print("Logging in via Selenium Grid...")
+    from src.hafele_login import login_and_get_cookies, save_cookies_to_redis  # lazy
     cookies, logged_in = login_and_get_cookies(
         GRID_URL, USER_AGENT, HAFELE_USERNAME, HAFELE_PASSWORD
     )
@@ -145,10 +165,58 @@ def login_and_save_cookies(redis_client) -> dict:
     return cookies
 
 
+_FETCH_BACKOFFS = (0.0, 1.0, 2.0, 4.0, 8.0)
+
+
+def _as_bytes(resp) -> bytes:
+    """Scrapling's various Fetcher versions expose the raw body under
+    different attribute names (``content``, ``body``); normalise."""
+    for attr in ("content", "body"):
+        val = getattr(resp, attr, None)
+        if val:
+            return val if isinstance(val, (bytes, bytearray)) else str(val).encode("utf-8")
+    text = getattr(resp, "text", "")
+    return text.encode("utf-8") if isinstance(text, str) else bytes(text or b"")
+
+
+def _status(resp) -> int:
+    return getattr(resp, "status_code", None) or getattr(resp, "status", None) or 0
+
+
 def fetch(url: str, cookies: dict | None = None) -> bytes:
-    resp = _HTTP.get(url, headers=BROWSER_HEADERS, cookies=cookies or {}, timeout=60)
-    resp.raise_for_status()
-    return resp.content
+    """Fetch ``url`` via Scrapling's Fetcher with transparent connect-error
+    retry so a brief post-startup network hiccup doesn't surface as a hard
+    failure here (the harvester is a one-shot; a single raise kills the
+    whole pipeline run)."""
+    last_err: Exception | None = None
+    for backoff in _FETCH_BACKOFFS:
+        if backoff:
+            time.sleep(backoff)
+        try:
+            impersonate = _pick_impersonation_profile()
+            try:
+                resp = Fetcher.get(
+                    url, headers=BROWSER_HEADERS, cookies=cookies or {},
+                    timeout=60, follow_redirects=True, impersonate=impersonate,
+                )
+            except TypeError:
+                try:
+                    resp = Fetcher.get(
+                        url, headers=BROWSER_HEADERS, cookies=cookies or {},
+                        timeout=60, allow_redirects=True, impersonate=impersonate,
+                    )
+                except TypeError:
+                    resp = Fetcher.get(
+                        url, headers=BROWSER_HEADERS, cookies=cookies or {},
+                        timeout=60,
+                    )
+            status = _status(resp)
+            if status >= 400:
+                raise RuntimeError(f"HTTP {status} for {url}")
+            return _as_bytes(resp)
+        except Exception as e:
+            last_err = e
+    raise last_err  # exhausted retries
 
 
 def load_sitemap_urls(index_url: str, cookies: dict | None = None) -> list:

@@ -102,3 +102,19 @@ CHROME_EXPERIMENTAL_OPTIONS = {
     "excludeSwitches": ["enable-automation"],
     "useAutomationExtension": False,
 }
+
+
+# ─── Scrapling impersonation profiles ────────────────────────────
+
+# Scrapling 0.4+ exposes curl_cffi-backed TLS/UA impersonation via the
+# ``impersonate=`` kwarg on Fetcher.get / StealthyFetcher.fetch. Passing
+# one of these aliases makes Scrapling mint a matching modern browser
+# fingerprint (UA string, Client Hints, JA3/JA4 TLS fingerprint, HTTP/2
+# frame order) that overrides anything in BROWSER_HEADERS["User-Agent"].
+#
+# Using this means we no longer need to manually keep USER_AGENT in sync
+# with the real browser binary installed in the harvester image. UA still
+# lives in BROWSER_HEADERS as a graceful-degradation default in case a
+# future Scrapling version drops the kwarg; curl_cffi's impersonate wins
+# at the wire layer when both are present.
+IMPERSONATION_PROFILES = ("chrome", "firefox", "safari", "edge")

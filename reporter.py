@@ -19,7 +19,34 @@ import redis
 from dotenv import load_dotenv
 
 from database import get_all_products, count_products
+from spiders.models import format_sku_with_dots
+from spiders.dinler_log import summarize_log, format_summary
 from src.send_mail import send_mail, send_mail_with_excel
+
+DINLER_LOG_PATH = os.getenv("DINLER_LOG_PATH", "/app/data/dinler_fallback.log")
+DINLER_SUMMARY_FILENAME = "dinler_fallback_summary.txt"
+
+
+def write_dinler_summary() -> str | None:
+    """Emit a human-readable Dinler fallback summary alongside the Excel.
+
+    Reads the per-scraper JSONL log, buckets outcomes + top error
+    signatures, prints to stdout for the container log, and writes a
+    text file into OUTPUT_DIR for operators to grab. Returns the
+    summary file path (or None if there was nothing to summarise).
+    """
+    summary = summarize_log(DINLER_LOG_PATH)
+    text = format_summary(summary)
+    print(text, flush=True)
+    try:
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        out_path = os.path.join(OUTPUT_DIR, DINLER_SUMMARY_FILENAME)
+        with open(out_path, "w", encoding="utf-8") as fh:
+            fh.write(text + "\n")
+        return out_path
+    except OSError as e:
+        print(f"⚠️ Could not write Dinler summary file: {e}")
+        return None
 
 load_dotenv()
 
@@ -72,6 +99,13 @@ def _write_products_excel(filepath: str) -> int:
     for col in drop_cols:
         if col in df.columns:
             df = df.drop(columns=[col])
+
+    # Dot-format all SKU-shaped columns so the export reads
+    # ``901.98.256`` (Dinler / Hafele catalog display style) instead of
+    # the digits-only ``90198256`` form the DB stores for indexing.
+    for sku_col in ("sku", "stock_code"):
+        if sku_col in df.columns:
+            df[sku_col] = df[sku_col].apply(format_sku_with_dots)
 
     # Ensure stockCode is the leftmost column
     cols = df.columns.tolist()
@@ -207,6 +241,10 @@ def main():
         return
 
     excel_path = generate_excel()
+    # Always emit the Dinler-fallback summary — even on empty Excel runs
+    # it tells us whether the fallback was never consulted vs. silently
+    # erroring on every lookup.
+    write_dinler_summary()
     if excel_path:
         for recipient in recipients:
             send_notification_emails(excel_path, recipient)

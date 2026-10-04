@@ -1,5 +1,8 @@
 scrapy
 scrapy-redis
+scrapling[fetchers]>=0.2.9
+pydantic>=2.0
+fakeredis>=2.0
 beautifulsoup4
 pandas
 openpyxl

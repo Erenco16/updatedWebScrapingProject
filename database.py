@@ -56,10 +56,13 @@ def init_schema():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 sku TEXT UNIQUE NOT NULL,
                 stock_code TEXT,
+                product_name TEXT,
                 kdv_haric_tavsiye_edilen_perakende_fiyat TEXT,
                 kdv_haric_net_fiyat TEXT,
                 kdv_haric_satis_fiyati TEXT,
+                currency TEXT,
                 stok_durumu TEXT,
+                stock_status TEXT,
                 stock_amount INTEGER,
                 product_description TEXT,
                 is_group_product INTEGER DEFAULT 0,
@@ -99,24 +102,21 @@ def reset_database():
 def save_product(data: dict) -> bool:
     """
     Insert or replace a product row.
-    data keys expected:
-        sku, stockCode (optional),
-        kdv_haric_tavsiye_edilen_perakende_fiyat,
-        kdv_haric_net_fiyat,
-        kdv_haric_satis_fiyati,
-        stok_durumu,
-        stock_amount,
-        product_description,
-        is_group_product (0/1)
+    Columns are 1:1 with ``spiders.models.ProductItem``; unknown keys in
+    ``data`` are ignored so the writer stays forward-compatible with new
+    Pydantic fields that don't yet have a column.
     """
     init_schema()
     params = (
         data.get("sku", ""),
-        data.get("stockCode", data.get("sku", "")),
+        data.get("stock_code", data.get("stockCode", data.get("sku", ""))),
+        data.get("product_name"),
         data.get("kdv_haric_tavsiye_edilen_perakende_fiyat"),
         data.get("kdv_haric_net_fiyat"),
         data.get("kdv_haric_satis_fiyati"),
+        data.get("currency", "TRY"),
         data.get("stok_durumu"),
+        data.get("stock_status"),
         data.get("stock_amount"),
         data.get("product_description"),
         1 if data.get("is_group_product") else 0,
@@ -130,21 +130,27 @@ def save_product(data: dict) -> bool:
                 """
                 INSERT INTO products (
                     sku, stock_code,
+                    product_name,
                     kdv_haric_tavsiye_edilen_perakende_fiyat,
                     kdv_haric_net_fiyat,
                     kdv_haric_satis_fiyati,
+                    currency,
                     stok_durumu,
+                    stock_status,
                     stock_amount,
                     product_description,
                     is_group_product,
                     scraped_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(sku) DO UPDATE SET
                     stock_code=excluded.stock_code,
+                    product_name=excluded.product_name,
                     kdv_haric_tavsiye_edilen_perakende_fiyat=excluded.kdv_haric_tavsiye_edilen_perakende_fiyat,
                     kdv_haric_net_fiyat=excluded.kdv_haric_net_fiyat,
                     kdv_haric_satis_fiyati=excluded.kdv_haric_satis_fiyati,
+                    currency=excluded.currency,
                     stok_durumu=excluded.stok_durumu,
+                    stock_status=excluded.stock_status,
                     stock_amount=excluded.stock_amount,
                     product_description=excluded.product_description,
                     is_group_product=excluded.is_group_product,

@@ -55,7 +55,7 @@ class HafeleDiscoverySpider(RedisSpider):
         "DOWNLOADER_MIDDLEWARES": {
             "scrapy.downloadermiddlewares.retry.RetryMiddleware": 90,
             "spiders.middlewares.RedisCookieMiddleware": 100,
-            "spiders.middlewares.RequestsDownloadMiddleware": 150,
+            "spiders.middlewares.ScraplingDownloadMiddleware": 150,
         },
     }
 

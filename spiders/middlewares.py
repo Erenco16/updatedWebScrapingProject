@@ -1,13 +1,27 @@
 """Custom Scrapy middlewares.
 
-- SeleniumGridMiddleware: legacy JS-render fallback (currently unused).
 - RedisCookieMiddleware: pulls fresh session cookies from Redis on a short
   TTL and attaches them to every request. Pairs with the cookie-refresher
   sidecar so long-running processors don't drift onto expired sessions.
-- RequestsDownloadMiddleware: fetch via python-requests in a worker thread
-  instead of Twisted's built-in HTTP client. Cloudflare fingerprints and
-  blocks Twisted's TLS/connection stack on this site even with identical
-  cookies/headers that pass through requests, curl, and a real browser.
+- ScraplingDownloadMiddleware: fetch via Scrapling's Fetcher in a worker
+  thread instead of Twisted's built-in HTTP client. Cloudflare fingerprints
+  and blocks Twisted's TLS/connection stack on hafele.com.tr even with
+  byte-identical cookies/headers that pass fine through any ordinary HTTP
+  client. Scrapling's Fetcher (httpx-based) sits in exactly that "ordinary"
+  bucket, so swapping it in resolves the 403s without touching the rest of
+  Scrapy's pipeline (RetryMiddleware, item pipeline, spider callbacks).
+
+  Rule 3 of the project's framework spec says to escalate to StealthyFetcher
+  if a target BLOCKS traditional clients. Hafele doesn't block us — once
+  the session is authenticated (cookies in Redis via the Selenium login),
+  the lightweight Fetcher gets 200s. If Cloudflare ever tightens its edge
+  rules and starts rejecting the httpx fingerprint too, swap
+  ``_FETCHER_CLS`` below for ``StealthyFetcher`` (adds a Playwright browser
+  per thread — much heavier, so default off).
+
+- SeleniumGridMiddleware: legacy JS-render fallback (currently unused,
+  kept for the rare case where a page needs full JS execution and
+  StealthyFetcher's Playwright isn't enough).
 """
 import json
 import os
@@ -15,58 +29,62 @@ import time
 import random
 import redis
 import socket
-import urllib3.util.connection as _urllib3_connection
-import requests as py_requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+
 from scrapy.http import HtmlResponse
 from scrapy import signals
 from twisted.internet.threads import deferToThread
 
-# Force IPv4 for all urllib3-backed requests (requests library).
+# Force IPv4 globally for every socket-using library in the process.
 # The Docker network on this host only routes IPv4 outbound reliably;
-# getent returns AAAA records for hafele.com.tr, and requests then tries
-# IPv6 first and can fail immediately with "Network is unreachable"
-# (especially during the first seconds after a container starts).
-# Twisted's HTTP client happened to fall back to IPv4 on its own.
-_urllib3_connection.allowed_gai_family = lambda: socket.AF_INET
+# DNS can return AAAA records for hafele.com.tr and libraries that
+# prefer IPv6 then fail immediately with "Network is unreachable",
+# especially during the first seconds after a container starts.
+_orig_getaddrinfo = socket.getaddrinfo
 
 
-def _make_requests_session() -> py_requests.Session:
-    """A Session with urllib3-level retries for connect/read errors only.
+def _ipv4_only_getaddrinfo(host, port, *args, **kwargs):
+    try:
+        results = _orig_getaddrinfo(host, port, *args, **kwargs)
+    except Exception:
+        raise
+    v4 = [r for r in results if r[0] == socket.AF_INET]
+    return v4 or results
 
-    We deliberately do NOT retry HTTP status codes here — Scrapy's
-    RetryMiddleware already handles RETRY_HTTP_CODES on the returned
-    Response. Retrying connect/read errors here prevents a brief network
-    hiccup (e.g. right at container startup) from being counted as a
-    request "attempt" against the payload's 3-attempt cap, which
-    otherwise burns through the whole queue in seconds.
+
+socket.getaddrinfo = _ipv4_only_getaddrinfo
+
+# Scrapling's Fetcher is the project-mandated replacement for raw requests.
+# Imported after the IPv4 patch so its httpx client inherits the socket
+# behaviour. Kept behind a module-level alias so the escalation path to
+# StealthyFetcher is a one-line change.
+import random  # noqa: E402
+
+from scrapling.fetchers import Fetcher  # noqa: E402
+
+_FETCHER_CLS = Fetcher
+
+# curl_cffi-backed browser impersonation profiles for Scrapling. We pick
+# one at random per request so TLS/UA fingerprints vary across the queue
+# and don't collapse to a single easily-blocked signature.
+from spiders.headers import IMPERSONATION_PROFILES  # noqa: E402
+
+
+def _pick_impersonation_profile() -> str:
+    """Return one of the Scrapling-supported browser aliases.
+
+    Kept as a module-level function (not just inlined ``random.choice``)
+    so tests can patch it deterministically and so a future upgrade to a
+    weighted / sticky-per-session strategy only needs one edit site.
     """
-    retry = Retry(
-        total=5,
-        connect=5,
-        read=3,
-        status=0,
-        backoff_factor=1.0,       # sleeps: 0, 1, 2, 4, 8 seconds
-        status_forcelist=[],
-        raise_on_status=False,
-        allowed_methods=frozenset(["GET", "POST", "HEAD"]),
-    )
-    adapter = HTTPAdapter(max_retries=retry, pool_connections=32, pool_maxsize=32)
-    sess = py_requests.Session()
-    sess.mount("https://", adapter)
-    sess.mount("http://", adapter)
-    return sess
+    return random.choice(IMPERSONATION_PROFILES)
 
+from selenium import webdriver  # noqa: E402
+from selenium.webdriver.common.by import By  # noqa: E402
+from selenium.webdriver.support.ui import WebDriverWait  # noqa: E402
+from selenium.webdriver.support import expected_conditions as EC  # noqa: E402
+from selenium.webdriver.chrome.options import Options as ChromeOptions  # noqa: E402
 
-_SESSION = _make_requests_session()
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.chrome.options import Options as ChromeOptions
-
-from spiders.headers import CHROME_ARGUMENTS, CHROME_EXPERIMENTAL_OPTIONS, USER_AGENT
+from spiders.headers import CHROME_ARGUMENTS, CHROME_EXPERIMENTAL_OPTIONS, USER_AGENT  # noqa: E402
 
 SELENIUM_GRID_URL = os.getenv("SELENIUM_GRID_URL", "http://selenium-hub:4444/wd/hub")
 
@@ -222,17 +240,23 @@ class SeleniumGridMiddleware:
 # ─── Redis-backed cookie injection ────────────────────────────────
 
 class RedisCookieMiddleware:
-    """Attach fresh session cookies from Redis to every outgoing request.
+    """Attach fresh session cookies from Redis to every outgoing request
+    whose host is hafele.com.tr.
 
     Reads `hafele:session:cookies` (JSON), caches the result in-process for
     `COOKIE_CACHE_TTL` seconds (default 60), and sets `request.cookies` so
-    Scrapy's built-in CookiesMiddleware (higher priority) serialises them
-    into the Cookie header.
+    the downstream fetch middleware serialises them into the Cookie header.
+
+    Only Hafele hosts receive the cookies: downstream helper calls (e.g.
+    the Dinler stock-fallback API) must not leak Hafele session tokens to
+    unrelated third parties.
 
     Pair with the `cookie-refresher` sidecar, which re-logs in every 10 min
     and updates the same Redis key. Processors then automatically pick up
     the new cookies within one TTL window without needing to restart.
     """
+
+    _HAFELE_HOST_SUFFIX = "hafele.com.tr"
 
     def __init__(self, crawler, redis_url: str, cache_ttl: int, cookies_key: str):
         # Stash crawler so we can get the current spider without receiving it
@@ -282,6 +306,13 @@ class RedisCookieMiddleware:
         self._maybe_refresh()
         if not self._cookies:
             return None
+        # Skip cookie injection for non-Hafele hosts (e.g. the Dinler
+        # fallback API). Hafele's session cookies have no meaning there
+        # and leaking them is both pointless and bad hygiene.
+        from urllib.parse import urlparse
+        host = (urlparse(request.url).hostname or "").lower()
+        if not host.endswith(self._HAFELE_HOST_SUFFIX):
+            return None
         # Merge — request-level cookies (rarely used here) take priority.
         current = dict(request.cookies) if isinstance(request.cookies, dict) else {}
         merged = dict(self._cookies)
@@ -290,30 +321,32 @@ class RedisCookieMiddleware:
         return None
 
 
-# ─── Cloudflare-safe fetch via python-requests ────────────────────
+# ─── Scrapling-based download middleware ─────────────────────────
 
-class RequestsDownloadMiddleware:
-    """Fetch every request via python-requests in a worker thread instead of
-    Twisted's built-in HTTP client.
+class ScraplingDownloadMiddleware:
+    """Fetch every request via Scrapling's Fetcher in a worker thread.
 
-    Twisted's TLS/connection stack gets fingerprinted and blocked by
-    Cloudflare on this site even with byte-identical cookies/headers that
-    pass fine through requests, curl, and a real browser (confirmed by
-    testing all four directly). This middleware swaps out only the actual
-    bytes-on-the-wire fetch; the returned Response flows through Scrapy's
-    normal pipeline (RetryMiddleware, item pipeline, spider callbacks)
-    unchanged.
+    Scrapling is the project's mandated HTTP/parsing framework (no raw
+    requests, no raw BeautifulSoup). Running it in a thread via
+    ``deferToThread`` keeps Scrapy's Twisted reactor unblocked while the
+    sync Fetcher call does its work.
 
     Register at a priority AFTER RedisCookieMiddleware (100) — e.g. 150 —
-    so cookies are already merged onto request.cookies before we fetch,
-    and so Scrapy's built-in CookiesMiddleware (700) is short-circuited
-    (returning a Response from process_request stops the chain).
+    so cookies are already merged onto ``request.cookies`` before we
+    fetch, and so Scrapy's built-in CookiesMiddleware (700) is
+    short-circuited (returning a Response from process_request stops the
+    chain and prevents it from fighting the Redis-sourced cookie jar).
     """
 
-    # Response headers requests has already consumed on our behalf; leaving
-    # them in place makes Scrapy's HttpCompressionMiddleware try to gunzip
-    # an already-decompressed body ("Not a gzipped file" error).
+    # Response headers the Fetcher has already consumed on our behalf
+    # (body is already decompressed, so passing Content-Encoding through
+    # would make HttpCompressionMiddleware try to gunzip plain bytes).
     _STRIP_RESPONSE_HEADERS = {"content-encoding", "content-length", "transfer-encoding"}
+
+    # Transient transport failures we retry inside one Scrapy attempt so a
+    # brief network blip at container startup doesn't surface as a
+    # permanent failure to the spider's errback.
+    _RETRY_BACKOFFS = (0.0, 1.0, 2.0, 4.0, 8.0)
 
     def __init__(self, timeout: float):
         self.timeout = timeout
@@ -323,40 +356,110 @@ class RequestsDownloadMiddleware:
         return cls(timeout=crawler.settings.getfloat("DOWNLOAD_TIMEOUT", 60))
 
     def process_request(self, request, spider):
-        # Run blocking requests.request in a thread so we don't stall the
-        # Scrapy/Twisted reactor. Returning a Deferred is soft-deprecated
-        # but still supported; the `async def` variant fails under
-        # Scrapy's asyncio reactor with "Task got bad yield: <Deferred>"
-        # because a raw Twisted Deferred isn't asyncio-awaitable there.
+        # Returning a Deferred is soft-deprecated but still supported; the
+        # `async def` variant fails under Scrapy's asyncio reactor with
+        # "Task got bad yield: <Deferred>" because a raw Twisted Deferred
+        # isn't asyncio-awaitable in that context.
         return deferToThread(self._fetch, request)
 
-    def _fetch(self, request):
-        headers = {
+    def _decode_headers(self, request) -> dict:
+        return {
             k.decode("latin1"): b", ".join(v).decode("latin1")
             for k, v in request.headers.items()
         }
-        cookies = dict(request.cookies) if isinstance(request.cookies, dict) else {}
-        method = request.method or "GET"
-        body = request.body if request.body else None
 
-        resp = _SESSION.request(
-            method,
-            request.url,
+    def _fetch(self, request):
+        headers = self._decode_headers(request)
+        cookies = dict(request.cookies) if isinstance(request.cookies, dict) else {}
+        method = (request.method or "GET").upper()
+
+        last_err: Exception | None = None
+        for backoff in self._RETRY_BACKOFFS:
+            if backoff:
+                time.sleep(backoff)
+            try:
+                return self._do_one_fetch(method, request, headers, cookies)
+            except Exception as e:
+                # Only transport-level failures get retried; a successful
+                # fetch with a 4xx/5xx is still a "success" at this layer
+                # and Scrapy's RetryMiddleware handles those.
+                last_err = e
+        raise last_err  # exhausted retries -> errback fires in the spider
+
+    def _do_one_fetch(self, method: str, request, headers: dict, cookies: dict):
+        fetch_fn = getattr(_FETCHER_CLS, method.lower(), None)
+        if fetch_fn is None:
+            fetch_fn = _FETCHER_CLS.get
+
+        # Scrapling's curl_cffi-backed impersonation mints a matching
+        # browser UA + Client Hints + TLS fingerprint and overrides any
+        # UA already in `headers` at the wire layer. One profile per
+        # request keeps the fingerprint-rotation surface wide.
+        impersonate = _pick_impersonation_profile()
+
+        kwargs = dict(
             headers=headers,
             cookies=cookies,
-            data=body,
             timeout=self.timeout,
-            allow_redirects=True,
+            follow_redirects=True,
+            impersonate=impersonate,
         )
+        # Scrapling's various fetcher versions differ in which kwargs
+        # they accept; strip ones that aren't understood rather than
+        # crashing the whole call. Scrapling >= 0.3 renamed
+        # ``follow_redirects`` to ``allow_redirects``.
+        try:
+            resp = fetch_fn(request.url, **kwargs)
+        except TypeError:
+            kwargs.pop("follow_redirects", None)
+            try:
+                resp = fetch_fn(request.url, **kwargs, allow_redirects=True)
+            except TypeError:
+                # Last-ditch: strip impersonate too in case a future
+                # Scrapling drops the kwarg name.
+                kwargs.pop("impersonate", None)
+                resp = fetch_fn(request.url, **kwargs)
+
+        return self._wrap_response(resp, request)
+
+    def _wrap_response(self, resp, request):
+        # Scrapling's Response exposes the same conceptual fields as
+        # requests.Response but under slightly different attribute names
+        # across versions. Pull defensively.
+        body = (
+            getattr(resp, "content", None)
+            or getattr(resp, "body", None)
+            or (resp.text.encode("utf-8") if getattr(resp, "text", None) else b"")
+        )
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+
+        status = (
+            getattr(resp, "status_code", None)
+            or getattr(resp, "status", None)
+            or 200
+        )
+        resp_url = getattr(resp, "url", request.url) or request.url
+        raw_headers = getattr(resp, "headers", {}) or {}
+        try:
+            headers_iter = raw_headers.items()
+        except AttributeError:
+            headers_iter = list(raw_headers)
 
         response_headers = [
-            (k, v) for k, v in resp.headers.items()
-            if k.lower() not in self._STRIP_RESPONSE_HEADERS
+            (k, v) for k, v in headers_iter
+            if str(k).lower() not in self._STRIP_RESPONSE_HEADERS
         ]
         return HtmlResponse(
-            url=resp.url,
-            body=resp.content,
-            status=resp.status_code,
+            url=resp_url,
+            body=body,
+            status=status,
             headers=response_headers,
             request=request,
         )
+
+
+# Backwards-compat alias: existing docker-compose logs and any external
+# references to the old class name still resolve. New code should use
+# ``ScraplingDownloadMiddleware`` directly.
+RequestsDownloadMiddleware = ScraplingDownloadMiddleware

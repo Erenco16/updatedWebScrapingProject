@@ -249,13 +249,23 @@ services:
     environment:
       - REDIS_URL=redis://hafele-redis:6379
       - PYTHONUNBUFFERED=1
+    # Shared ./data mount so (a) the Scrapling adaptive-selector tracker
+    # DB persists across container recreations and (b) the Dinler
+    # fallback JSONL log written by scraper replicas lands on the same
+    # volume the reporter reads from at end-of-run.
+    # No SQLite writes happen here — that moved to db-writer — so the
+    # original "no mount to avoid concurrent WAL coordination" concern
+    # no longer applies.
+    volumes:
+      - ./data:/app/data
     command: ["python", "-m", "scrapy", "crawl", "hafele_discovery", "-s", "REDIS_URL=redis://hafele-redis:6379", "-s", "LOG_LEVEL=INFO"]
 
   # ─── Scraper: pops variant price/stock API urls from hafele:scrape_queue
   #     (pushed by discovery above), fetches real price/stock data, and
-  #     pushes the result to hafele:db_write_queue for db-writer. No longer
-  #     mounts ./data -- it pushes items to Redis instead of writing
-  #     SQLite directly (see db-writer below). ─────────────────────────
+  #     pushes the result to hafele:db_write_queue for db-writer. Mounts
+  #     ./data so the Scrapling adaptive-tracker DB and the Dinler
+  #     fallback JSONL log are shared with the reporter. SQLite writes
+  #     still only happen in db-writer, so no concurrent-writer risk. ──
   scraper:
     build:
       context: .
@@ -272,6 +282,8 @@ services:
     environment:
       - REDIS_URL=redis://hafele-redis:6379
       - PYTHONUNBUFFERED=1
+    volumes:
+      - ./data:/app/data
     command: ["python", "-m", "scrapy", "crawl", "hafele_scraper", "-s", "REDIS_URL=redis://hafele-redis:6379", "-s", "LOG_LEVEL=INFO"]
 
   # ─── Single dedicated SQLite writer. Ten processor containers writing to
