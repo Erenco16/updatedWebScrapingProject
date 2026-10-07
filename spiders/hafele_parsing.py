@@ -75,6 +75,14 @@ MAX_ATTEMPTS = 3
 # network flapping, brief DNS blip, upstream restart) doesn't burn through
 # the 3-attempt application budget in seconds.
 MAX_NET_ATTEMPTS = 15
+# "Hafele parsed as unknown-status" retries. Three immediate head-of-queue
+# retries with exponential backoff (1s, 2s, 4s) run on the FIRST pass. If
+# all three retries still can't resolve stock info, the SKU is deferred to
+# the END of the queue with ``second_pass=True`` and gets one more Hafele
+# attempt after everything else drains. Only if THAT also fails do we fall
+# back to Dinler — Dinler is now explicitly last-resort instead of fired
+# on the first unknown parse.
+MAX_UNKNOWN_RETRIES = 3
 
 # Where Scrapling persists its adaptive-selector fingerprints. Must sit
 # on the mounted ./data volume so the fingerprints survive container
@@ -307,43 +315,226 @@ def parse_price_from_html(html: bytes) -> dict:
     }
 
 
+def _parse_hafele_qty(qty_text: str) -> int | None:
+    """Turn Hafele's rendered stock-count string into an int.
+
+    Hafele uses the Turkish numeric locale: dot is the *thousands*
+    separator, not the decimal point. So "13.600" means 13 600 units,
+    not 13.6. Trailing whitespace / \\n chars survive Scrapling's
+    text extraction, so we strip aggressively before trying ``int()``.
+    """
+    if not qty_text:
+        return None
+    cleaned = (
+        qty_text.strip()
+        .replace("\xa0", "")      # NBSP sometimes separates thousands
+        .replace(" ", "")
+        .replace(".", "")         # thousands separator
+        .replace("\n", "")
+        .replace("\r", "")
+        .replace("\t", "")
+    )
+    return int(cleaned) if cleaned.isdigit() else None
+
+
+# Scrapling's adaptive selector can misfire two ways on Hafele's stock
+# tables; both have produced bad DB rows in prior runs:
+#
+# 1. The response has an *order-qty* subtype row (``tr.values-tr.order-qty``,
+#    a "minimum order quantity" / packaging-size row, NOT inventory):
+#       <tr class="values-tr order-qty">
+#         <td class=" qty-available">Ambalaj birimi 1</td>  <-- a label
+#         <td class="availablePackageStatus">                <-- different class
+#           <span class="availability-flag">stokta mevcut</span>
+#         </td>
+#       </tr>
+#    Adaptive match treats ``availablePackageStatus`` as a close enough
+#    neighbour of our target ``requestedPackageStatus``, so we read
+#    ``"stokta mevcut"`` from that row and then try to parse qty text
+#    like ``"Ambalaj birimi 1"`` -> int which gives None. Result:
+#    ``("stokta mevcut", None)`` instead of the real inventory row's
+#    status, or worse, a false-positive "in stock" when the item is on
+#    request/backorder.
+#
+# 2. ``parse_stock_fallback``'s ``#productAvailabilityInformation
+#    .availability-flag`` selector hits an empty span. Adaptive match
+#    then relocates to the nearest similar ``<span>``, which turns out
+#    to be the ``<span class="perUnit"># Adet (ADT)</span>`` in the
+#    price block. That's how ``# Adet (ST)`` / ``# Set (GR)`` /
+#    ``# Çift (Çift)`` wound up as ``stok_durumu`` for 3,855 rows.
+#
+# Defense in depth: (a) explicitly skip ``order-qty`` rows,
+# (b) reject any avail text that looks like a unit-label pollutant,
+# (c) reject qty text that looks like a packaging label.
+
+_ORDER_QTY_ROW_RE = re.compile(r"\border-qty\b")
+_UNIT_LABEL_RE = re.compile(r"^\s*#|ambalaj birimi", re.IGNORECASE)
+
+
+def _looks_like_unit_label(text: str) -> bool:
+    """True if ``text`` looks like a packaging/unit label (``# Adet (ST)``,
+    ``Ambalaj birimi 1``, etc.) rather than a real availability flag or qty.
+    """
+    if not text:
+        return False
+    return bool(_UNIT_LABEL_RE.search(text))
+
+
+def _is_order_qty_row(row) -> bool:
+    """True if the given Scrapling row is a Type B ``order-qty`` row
+    (minimum-order / packaging-size, not inventory)."""
+    try:
+        classes = row.attrib.get("class") or ""
+    except Exception:
+        return False
+    return bool(_ORDER_QTY_ROW_RE.search(classes))
+
+
 def parse_stock_from_values_tr(html: bytes) -> tuple[str | None, int | None]:
     """Iterate tr.values-tr rows to find (stok_durumu, stock_amount).
 
     Priority (mirrors legacy handle_singular_product):
       - Prefer any row whose availability text contains 'stokta mevcut'
-      - Otherwise use the first row that has both a qty AND an availability flag
-      - Rows without a valid qty or without a flag are skipped
+        AND has a parseable numeric qty. A row that says "stokta mevcut"
+        but reports an unparseable qty (eg a packaging label that
+        Scrapling's adaptive match stole into the qty column) must NOT
+        win over a later "stokta mevcut" row that has real inventory.
+      - Fall back to the first row that has both a qty and an
+        availability flag.
+      - Rows without an availability flag are skipped entirely.
+      - ``order-qty`` subtype rows (minimum-order-qty / packaging-size,
+        not inventory) are skipped entirely to defeat Scrapling's
+        adaptive drift onto ``availablePackageStatus``.
+
+    The top-level ``tr.values-tr`` lookup is strict (adaptive=False).
+    Previously adaptive drift would relocate to BOM-product
+    ``<tr>`` wrappers that live outside the normal variant table and
+    produced false ``("stokta mevcut", None)`` returns for 94 Bill-of-
+    Materials SKUs. BOM products have their own dedicated parser —
+    ``parse_stock_from_bom`` below.
     """
     page = _selector(html)
-    preferred = None
-    fallback = None
-    rows = page.css("tr.values-tr", **_ADAPTIVE_KW) or []
+    preferred = None       # ("stokta mevcut", qty>=0) — hard match
+    preferred_noqty = None # ("stokta mevcut", None)   — soft match
+    fallback = None        # first (any_status, qty) we can read
+    rows = page.css("tr.values-tr", auto_save=True, adaptive=False) or []
     for row in rows:
+        if _is_order_qty_row(row):
+            continue  # Type B; not real inventory
         qty_text = _safe_text(_css_first(row, "td.qty-available", **_ADAPTIVE_KW))
         avail_text = _safe_text(
             _css_first(row, "td.requestedPackageStatus .availability-flag", **_ADAPTIVE_KW)
         )
-        if not qty_text and not avail_text:
-            continue
+        # Guard against adaptive-match pollution: reject any text that
+        # looks like a packaging label (#-prefixed unit, "Ambalaj
+        # birimi …", etc.).
+        if _looks_like_unit_label(avail_text):
+            avail_text = ""
+        if _looks_like_unit_label(qty_text):
+            qty_text = ""
         if not avail_text:
             continue
-        qty = int(qty_text) if qty_text.isdigit() else None
+        qty = _parse_hafele_qty(qty_text)
         if "stokta mevcut" in avail_text.lower():
-            preferred = ("stokta mevcut", qty)
-            break
+            if qty is not None:
+                preferred = ("stokta mevcut", qty)
+                break  # best possible match found; stop scanning
+            if preferred_noqty is None:
+                preferred_noqty = ("stokta mevcut", None)
+            continue
         if fallback is None:
             fallback = (avail_text, qty)
-    return preferred or fallback or (None, None)
+    return preferred or preferred_noqty or fallback or (None, None)
+
+
+# BOM / Kit products expose per-component availability in a totally
+# different DOM shape — no ``tr.values-tr`` table. Each component gets
+# one ``<div class="bomArticleStatus"><span class="availability-flag">
+# stokta mevcut</span></div>`` plus a sibling cell
+# ``<td class="bomArticleStatus"> 20000 Adet (ADT) </td>`` carrying the
+# quantity. The qty text leads with a Turkish-locale integer and then a
+# unit suffix (``Adet``, ``Çift``, ``Set``, ``Metre``, ``Kilogram``, …).
+_BOM_QTY_RE = re.compile(r"^\s*([\d.,\s ]+?)\s+\S")
+
+
+def _parse_bom_qty(td_text: str) -> int | None:
+    """Pull the leading integer out of a ``bomArticleStatus`` cell."""
+    if not td_text:
+        return None
+    m = _BOM_QTY_RE.match(td_text.strip())
+    if not m:
+        return None
+    return _parse_hafele_qty(m.group(1))
+
+
+def parse_stock_from_bom(html: bytes) -> tuple[str | None, int | None]:
+    """Parse Hafele's BOM / Kit product shape.
+
+    Looks for pairs of ``div.bomArticleStatus`` (holds the availability
+    flag) and ``td.bomArticleStatus`` (holds the quantity + unit
+    label). Returns the "best" pair using the same priority as
+    ``parse_stock_from_values_tr``:
+
+      1. First ``stokta mevcut`` component with a parseable qty wins.
+      2. Else first ``stokta mevcut`` component (qty None) wins.
+      3. Else first component with any status (qty optional) wins.
+      4. Else ``(None, None)`` so the Dinler fallback can take over.
+    """
+    page = _selector(html)
+    status_divs = page.css("div.bomArticleStatus", auto_save=True, adaptive=False) or []
+    qty_tds = page.css("td.bomArticleStatus", auto_save=True, adaptive=False) or []
+    if not status_divs:
+        return (None, None)
+
+    preferred = None
+    preferred_noqty = None
+    fallback = None
+
+    for i, div in enumerate(status_divs):
+        flag = _safe_text(_css_first(div, "span.availability-flag", auto_save=True, adaptive=False))
+        if _looks_like_unit_label(flag):
+            flag = ""
+        if not flag:
+            continue
+        qty_td = qty_tds[i] if i < len(qty_tds) else None
+        qty_text = _safe_text(qty_td) if qty_td is not None else ""
+        qty = _parse_bom_qty(qty_text) if qty_text else None
+
+        if "stokta mevcut" in flag.lower():
+            if qty is not None:
+                preferred = ("stokta mevcut", qty)
+                break
+            if preferred_noqty is None:
+                preferred_noqty = ("stokta mevcut", None)
+            continue
+        if fallback is None:
+            fallback = (flag, qty)
+
+    return preferred or preferred_noqty or fallback or (None, None)
 
 
 def parse_stock_fallback(html: bytes) -> str | None:
-    """Fallback: use #productAvailabilityInformation .availability-flag text."""
+    """Fallback: use #productAvailabilityInformation .availability-flag text.
+
+    Must NOT use adaptive matching here. When the real
+    ``.availability-flag`` span is empty, Scrapling's adaptive fallback
+    relocates to the nearest similar ``<span>`` and the nearest one in a
+    Hafele PDS response is ``<span class="perUnit"># Adet (ADT)</span>``
+    inside the price block. That misfire was the source of 3,855 bad
+    ``stok_durumu`` values (``# Adet (ST)`` / ``# Set (GR)`` /
+    ``# Çift (Çift)`` / etc.) in the previous full run.
+    """
     page = _selector(html)
+    # Direct raw match only; no adaptive relocation. If this returns
+    # nothing, we'd rather fall through to the Dinler API than invent a
+    # fake status from a cross-element span.
     node = _css_first(
-        page, "#productAvailabilityInformation .availability-flag", **_ADAPTIVE_KW
+        page, "#productAvailabilityInformation .availability-flag",
+        auto_save=True, adaptive=False,
     )
     txt = _safe_text(node)
+    if _looks_like_unit_label(txt):
+        return None
     return txt or None
 
 

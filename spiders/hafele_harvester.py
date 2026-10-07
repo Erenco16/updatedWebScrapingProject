@@ -260,6 +260,18 @@ def main():
     redis_client.delete(REDIS_QUEUE_KEY, SCRAPE_QUEUE_KEY, DB_WRITE_QUEUE_KEY)
     print(f"Cleared old queues: {REDIS_QUEUE_KEY}, {SCRAPE_QUEUE_KEY}, {DB_WRITE_QUEUE_KEY}")
 
+    # Truncate the Dinler fallback log so this run's summary doesn't
+    # inherit the previous run's entries. Scraper replicas open the log
+    # with FileHandler(mode="a") on first call, so clearing it here —
+    # before they start — gives them a clean slate.
+    dinler_log_path = os.getenv("DINLER_LOG_PATH", "/app/data/dinler_fallback.log")
+    try:
+        if os.path.exists(dinler_log_path):
+            open(dinler_log_path, "w").close()
+            print(f"Cleared Dinler fallback log: {dinler_log_path}")
+    except OSError as e:
+        print(f"Could not clear Dinler fallback log at {dinler_log_path}: {e}")
+
     reset_database()
     cleanup_stale_excel_files()
     send_start_notification()

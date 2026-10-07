@@ -32,14 +32,27 @@ from spiders.hafele_parsing import (
     REDIS_COOKIES_KEY,
     API_SKU_RE,
     DEFAULT_STATUS_UNKNOWN,
+    MAX_UNKNOWN_RETRIES,
     parse_price_from_html,
     parse_stock_from_values_tr,
+    parse_stock_from_bom,
     parse_stock_fallback,
     build_dinler_url,
     normalize_stock_status,
     get_redis,
     requeue_or_drop,
 )
+
+
+def unknown_retry_backoff_seconds(unknown_attempt: int) -> int:
+    """Exponential backoff for Hafele unknown-status retries.
+
+    attempt 1 -> 1s, attempt 2 -> 2s, attempt 3 -> 4s. Capped at 10s so
+    a worker is never tied up on a single SKU for too long.
+    """
+    if unknown_attempt <= 0:
+        return 0
+    return min(2 ** (unknown_attempt - 1), 10)
 
 
 class HafeleScraperSpider(RedisSpider):
@@ -76,6 +89,17 @@ class HafeleScraperSpider(RedisSpider):
     def make_request_from_data(self, data):
         raw = data.decode("utf-8") if isinstance(data, bytes) else data
         payload = json.loads(raw)
+        # Exponential backoff for Hafele unknown-status retries. The
+        # scraper's parse_product_api requeues a popped SKU with an
+        # incremented ``unknown_attempt`` whenever Hafele's body couldn't
+        # resolve to a usable stock status. Sleeping here (per-pop) gives
+        # Hafele's edge time to recover from the soft-reject condition
+        # that caused the previous attempt to return empty / unparseable
+        # content, without needing a cross-process delay scheduler.
+        ua = int(payload.get("unknown_attempt", 0) or 0)
+        if ua > 0:
+            import time as _time
+            _time.sleep(unknown_retry_backoff_seconds(ua))
         return Request(
             url=payload["url"],
             callback=self.parse_product_api,
@@ -99,9 +123,57 @@ class HafeleScraperSpider(RedisSpider):
             return
 
         # Scrapling-backed parsing: see spiders/hafele_parsing.py.
+        # Three-layer stock detection:
+        #   1. tr.values-tr          -> normal variant inventory table
+        #   2. BOM bomArticleStatus  -> Bill-of-Materials / Kit products
+        #   3. productAvailabilityInformation .availability-flag -> status-only fallback
+        # Only after all three come up empty do we tag the row for the
+        # new unknown-retry flow (and ultimately Dinler as last resort).
+        # Empty / soft-reject bodies naturally land in this same unknown
+        # bucket because all three parsers return (None, None) on them,
+        # which the retry flow handles via exp backoff.
         stok_durumu, stock_amount = parse_stock_from_values_tr(response.body)
         if not stok_durumu:
+            stok_durumu, stock_amount = parse_stock_from_bom(response.body)
+        if not stok_durumu:
             stok_durumu = parse_stock_fallback(response.body) or DEFAULT_STATUS_UNKNOWN
+
+        # Unknown-status retry flow:
+        #   first pass:
+        #     - 3 immediate head-of-queue retries with exp backoff (1s, 2s, 4s)
+        #     - on 3rd exhausted retry, defer to end of queue (second_pass)
+        #   second pass:
+        #     - one more Hafele attempt after everything else drains
+        #     - if THAT also returns unknown, fall through to Dinler
+        # Dinler is strictly last-resort now; it's never fired on the
+        # first unknown parse.
+        unknown_attempt = int(payload.get("unknown_attempt", 0) or 0)
+        second_pass = bool(payload.get("second_pass", False))
+        if stok_durumu == DEFAULT_STATUS_UNKNOWN and not second_pass:
+            rc = get_redis()
+            if unknown_attempt < MAX_UNKNOWN_RETRIES:
+                next_attempt = unknown_attempt + 1
+                new_payload = {**payload, "unknown_attempt": next_attempt}
+                rc.lpush(SCRAPE_QUEUE_KEY, json.dumps(new_payload))
+                self.logger.info(
+                    f"API SKU={sku} unknown status; head-requeue for retry "
+                    f"{next_attempt}/{MAX_UNKNOWN_RETRIES} "
+                    f"(exp backoff {unknown_retry_backoff_seconds(next_attempt)}s on pop)"
+                )
+                return
+            # Exhausted the 3 immediate retries -> move to END of queue
+            # (rpush = tail; lpop consumer drains everything above it first).
+            new_payload = {
+                **payload,
+                "unknown_attempt": 0,
+                "second_pass": True,
+            }
+            rc.rpush(SCRAPE_QUEUE_KEY, json.dumps(new_payload))
+            self.logger.info(
+                f"API SKU={sku} exhausted first-pass retries ({MAX_UNKNOWN_RETRIES}x); "
+                "deferred to end of queue (second_pass)"
+            )
+            return
 
         price_info = parse_price_from_html(response.body)
 
@@ -140,18 +212,31 @@ class HafeleScraperSpider(RedisSpider):
             f"API SKU={sku} status='{item.stok_durumu}' qty={item.stock_amount}"
         )
 
-        # Hafele has no useful stock info for this variant → ask Dinler.
-        # Yield a follow-up Request rather than blocking inside this
-        # callback; downloader middleware will run it in a worker thread
-        # like every other request.
+        # Last-resort Dinler fallback. By the time control reaches here
+        # with an unknown stok_durumu we've ALREADY exhausted:
+        #   - 3 head-of-queue retries with exp backoff (first pass)
+        #   - 1 end-of-queue retry after everything else drains (second pass)
+        # So this is the point where Hafele genuinely has no stock info
+        # we can read and Dinler is our only remaining shot.
         if item.stok_durumu == DEFAULT_STATUS_UNKNOWN:
             dinler_url = build_dinler_url(sku)
-            self.logger.info(f"Dinler fallback → {dinler_url}")
+            self.logger.info(f"Dinler fallback (last resort) → {dinler_url}")
             yield Request(
                 url=dinler_url,
                 callback=self.parse_dinler_fallback,
                 errback=self.on_dinler_failure,
-                meta={"item": item.model_dump(), "sku": sku},
+                # handle_httpstatus_all so Scrapy's HttpErrorMiddleware
+                # doesn't swallow non-200 Dinler responses. Previously
+                # ~190 SKUs ended up with "Stok bilgisi bulunamadi" in
+                # the final Excel because Dinler returned a 4xx/5xx, the
+                # response never reached parse_dinler_fallback (it went
+                # to errback as "Ignoring non-200 response"), and the
+                # item was yielded with its original DEFAULT_STATUS.
+                meta={
+                    "item": item.model_dump(),
+                    "sku": sku,
+                    "handle_httpstatus_all": True,
+                },
                 dont_filter=True,
                 headers=self._DINLER_HEADERS,
             )
