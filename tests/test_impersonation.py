@@ -56,6 +56,11 @@ class TestMiddlewareImpersonation:
         req.headers.items.return_value = [
             (b"Accept", [b"text/html"]),
         ]
+        # The middleware now consults ``request.meta.get("impersonate_override")``
+        # before falling back to the random picker. With a bare MagicMock,
+        # ``meta.get(...)`` returns another MagicMock (truthy), which would
+        # starve the random picker. Give it a real dict so .get() behaves.
+        req.meta = {}
         return req
 
     def test_impersonate_kwarg_is_passed(self):

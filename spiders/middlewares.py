@@ -395,7 +395,15 @@ class ScraplingDownloadMiddleware:
         # browser UA + Client Hints + TLS fingerprint and overrides any
         # UA already in `headers` at the wire layer. One profile per
         # request keeps the fingerprint-rotation surface wide.
-        impersonate = _pick_impersonation_profile()
+        #
+        # ``request.meta['impersonate_override']`` lets a spider pin a
+        # specific profile on retry — used by the Dinler-block-page
+        # retry path to force rotating off the profile that tripped
+        # Cloudflare's TDM block on the previous attempt.
+        impersonate = request.meta.get("impersonate_override") or _pick_impersonation_profile()
+        # Record which profile actually went on the wire so a retry
+        # callback can pick a *different* one next time.
+        request.meta["impersonate_used"] = impersonate
 
         kwargs = dict(
             headers=headers,

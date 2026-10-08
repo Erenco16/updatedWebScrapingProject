@@ -42,6 +42,31 @@ from spiders.hafele_parsing import (
     get_redis,
     requeue_or_drop,
 )
+from spiders.headers import IMPERSONATION_PROFILES
+
+
+# Max consecutive Dinler retries after an HTML-block page is detected.
+# One retry is enough: if Dinler's edge rejects two different browser
+# profiles in a row, more rotations rarely help and we'd rather accept
+# the parse_error than hammer them.
+MAX_DINLER_BLOCK_RETRIES = 1
+# Sleep between Dinler block-retry attempts. Short enough that it
+# doesn't materially slow the run (block-page cases are < 1% of items)
+# but long enough that the Dinler edge sees the new request as a fresh
+# session rather than a continuation of the blocked one.
+DINLER_BLOCK_RETRY_SLEEP_SECONDS = 0.5
+
+# Markers that indicate a Cloudflare / Dinler bot-block HTML page
+# rather than a valid JSON stock response.
+_DINLER_BLOCK_MARKERS = (
+    "erişim engellendi",             # Dinler's Turkish block text
+    "otomatik veri toplama",         # "automated data collection ... prohibited"
+    "cloudflare",
+    "tdm-reservation",
+    "<!doctype html",
+    "<html",
+    "attention required",
+)
 
 
 def unknown_retry_backoff_seconds(unknown_attempt: int) -> int:
@@ -53,6 +78,39 @@ def unknown_retry_backoff_seconds(unknown_attempt: int) -> int:
     if unknown_attempt <= 0:
         return 0
     return min(2 ** (unknown_attempt - 1), 10)
+
+
+def looks_like_dinler_block_page(body: bytes | None) -> bool:
+    """True if the response body looks like Cloudflare's TDM / bot-block
+    HTML page rather than Dinler's normal JSON reply.
+
+    Manual probe confirmed Dinler's edge returns an HTML body containing
+    *"Erişim engellendi. Otomatik veri toplama ve izinsiz kopyalama
+    yasaktır."* (Access denied. Automated data collection and
+    unauthorized copying is prohibited.) when it decides a client
+    doesn't look browser-shaped enough.
+    """
+    if not body:
+        return False
+    try:
+        sample = body[:500].decode("utf-8", errors="replace").lower()
+    except Exception:
+        return False
+    return any(marker in sample for marker in _DINLER_BLOCK_MARKERS)
+
+
+def pick_different_impersonation_profile(previous: str | None) -> str:
+    """Pick an impersonation alias deliberately different from ``previous``.
+
+    If ``previous`` isn't a known profile (or is None), returns a random
+    pick. Used by the Dinler block-retry path to rotate off whatever
+    profile just tripped the TDM block.
+    """
+    import random
+    if previous not in IMPERSONATION_PROFILES:
+        return random.choice(IMPERSONATION_PROFILES)
+    remaining = [p for p in IMPERSONATION_PROFILES if p != previous]
+    return random.choice(remaining) if remaining else previous
 
 
 class HafeleScraperSpider(RedisSpider):
@@ -253,6 +311,50 @@ class HafeleScraperSpider(RedisSpider):
         try:
             payload = json.loads(response.text) if response.body else {}
         except (ValueError, UnicodeDecodeError) as e:
+            # Distinguish "Dinler threw its Cloudflare TDM HTML block
+            # page at us" from "Dinler returned legit non-JSON garbage".
+            # On the former, retry once with a DIFFERENT impersonation
+            # profile after a short sleep so Dinler's edge sees a fresh-
+            # looking session. Confirmed via manual curl probe: Dinler
+            # lets browser-shaped requests through but blocks ones that
+            # look crawler-ish, and the block is pattern-based (not IP),
+            # so profile rotation reliably escapes it.
+            dinler_block_retry = int(response.meta.get("dinler_block_retry", 0) or 0)
+            if (
+                looks_like_dinler_block_page(response.body)
+                and dinler_block_retry < MAX_DINLER_BLOCK_RETRIES
+            ):
+                prev_profile = response.meta.get("impersonate_used")
+                next_profile = pick_different_impersonation_profile(prev_profile)
+                self.logger.warning(
+                    f"Dinler SKU={sku} HTML block page detected (prev impersonate="
+                    f"{prev_profile!r}); retrying with impersonate={next_profile!r}"
+                )
+                # ``time.sleep`` blocks the reactor briefly, but Dinler
+                # block-page cases are <1% of items so the aggregate
+                # impact is negligible (52 cases * 0.5s = 26s added to a
+                # multi-hour run) and the alternative (deferred callback
+                # via twisted) is far more complex.
+                import time as _time
+                _time.sleep(DINLER_BLOCK_RETRY_SLEEP_SECONDS)
+                yield Request(
+                    url=response.url,
+                    callback=self.parse_dinler_fallback,
+                    errback=self.on_dinler_failure,
+                    meta={
+                        "item": item_data,
+                        "sku": sku,
+                        "handle_httpstatus_all": True,
+                        "dinler_block_retry": dinler_block_retry + 1,
+                        "impersonate_override": next_profile,
+                    },
+                    dont_filter=True,
+                    headers=self._DINLER_HEADERS,
+                )
+                return
+            # Either not a block page, or we already retried and still
+            # got garbage: accept the parse failure and ship the item
+            # with its original (unknown) stock info.
             self.logger.warning(f"Dinler SKU={sku} unparseable JSON: {e}")
             log_fallback_attempt(sku, "parse_error", error=e, status=response.status)
             yield item_data
